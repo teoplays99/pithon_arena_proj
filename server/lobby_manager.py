@@ -1,0 +1,78 @@
+"""Lobby and matchmaking state for the single active match model."""
+
+from __future__ import annotations
+
+from threading import Lock
+
+
+class LobbyManager:
+    """Track waiting players and pending challenges."""
+
+    def __init__(self) -> None:
+        self._lock = Lock()
+        self._waiting_players: set[str] = set()
+        self._pending_challenges: dict[str, str] = {}
+
+    def set_waiting(self, username: str) -> None:
+        """Mark a user as waiting for an opponent."""
+        with self._lock:
+            self._waiting_players.add(username)
+            self._pending_challenges = {
+                target: challenger
+                for target, challenger in self._pending_challenges.items()
+                if target != username and challenger != username
+            }
+
+    def clear_player(self, username: str) -> None:
+        """Remove a player from waiting and challenge state."""
+        with self._lock:
+            self._waiting_players.discard(username)
+            self._pending_challenges.pop(username, None)
+            self._pending_challenges = {
+                target: challenger
+                for target, challenger in self._pending_challenges.items()
+                if challenger != username
+            }
+
+    def issue_challenge(self, challenger: str, target: str, online_users: set[str]) -> tuple[bool, str]:
+        """Create a pending challenge between two online users."""
+        with self._lock:
+            if challenger == target:
+                return False, "You cannot challenge yourself."
+            if target not in online_users:
+                return False, "Target player is not online."
+            if challenger not in online_users:
+                return False, "Challenger is not online."
+            if target in self._pending_challenges:
+                return False, "Target player already has a pending challenge."
+
+            self._waiting_players.discard(challenger)
+            self._pending_challenges[target] = challenger
+            return True, f"{challenger} challenged {target}."
+
+    def accept_challenge(self, target: str, challenger: str) -> tuple[bool, str]:
+        """Accept a pending challenge if it matches the stored request."""
+        with self._lock:
+            pending_challenger = self._pending_challenges.get(target)
+            if pending_challenger != challenger:
+                return False, "No matching challenge to accept."
+
+            self._pending_challenges.pop(target, None)
+            self._waiting_players.discard(target)
+            self._waiting_players.discard(challenger)
+            return True, "Challenge accepted."
+
+    def restore_challenge(self, target: str, challenger: str) -> None:
+        """Restore a challenge after a failed match start."""
+        with self._lock:
+            self._pending_challenges[target] = challenger
+
+    def pending_challenger_for(self, target: str) -> str | None:
+        """Return the pending challenger for a target player."""
+        with self._lock:
+            return self._pending_challenges.get(target)
+
+    def waiting_players(self) -> list[str]:
+        """Return waiting players sorted for display."""
+        with self._lock:
+            return sorted(self._waiting_players)
