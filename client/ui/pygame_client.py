@@ -31,6 +31,15 @@ NEON_PINK = (255, 60, 190)
 NEON_GREEN = (57, 255, 20)
 TEXT_COLOR = (236, 236, 236)
 FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "Monocraft.ttc"
+LOBBY_TITLE_FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "Geet-Regular.ttf"
+LOBBY_LEFT_WIDTH = int(WINDOW_WIDTH * 0.67)
+LOBBY_PADDING_X = 36
+LOBBY_TITLE_Y = 54
+LOBBY_LIST_Y = 154
+LOBBY_BUTTON_Y = 420
+LOBBY_BUTTON_WIDTH = 180
+LOBBY_BUTTON_HEIGHT = 46
+LOBBY_BUTTON_GAP = 18
 
 
 def challengeable_users(state: ClientAppState) -> list[str]:
@@ -87,6 +96,10 @@ def run_pygame_client(
     clock = pygame.time.Clock()
     font = pygame.font.Font(str(FONT_PATH), 24)
     small_font = pygame.font.Font(str(FONT_PATH), 18)
+    lobby_title_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 38)
+    lobby_button_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 22)
+    user_label_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 16)
+    player_name_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 20)
 
     client = ArenaClient()
     state = ClientAppState()
@@ -185,9 +198,24 @@ def run_pygame_client(
                     )
                     if state.phase == "login" and not state.username and client._socket is None:
                         login_stage = "connect"
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    _handle_mouse_click(client, state, event.pos)
 
             screen.fill(BACKGROUND_COLOR)
-            _draw_ui(pygame, screen, font, small_font, state, form, login_stage, active_field_index)
+            _draw_ui(
+                pygame,
+                screen,
+                font,
+                small_font,
+                lobby_title_font,
+                lobby_button_font,
+                user_label_font,
+                player_name_font,
+                state,
+                form,
+                login_stage,
+                active_field_index,
+            )
             pygame.display.flip()
             clock.tick(30)
     finally:
@@ -259,9 +287,9 @@ def _handle_keydown(
         step = -1 if key == pygame.K_UP else 1
         state.selected_lobby_index = (state.selected_lobby_index + step) % len(users)
     elif key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state.phase == "lobby":
-        users = challengeable_users(state)
-        if not users:
+        if not _invite_enabled(state):
             return active_field_index
+        users = challengeable_users(state)
         selected = users[state.selected_lobby_index % len(users)]
         client.send(message_types.CHALLENGE_PLAYER, {"target_username": selected})
     return active_field_index
@@ -272,6 +300,10 @@ def _draw_ui(
     screen: Any,
     font: Any,
     small_font: Any,
+    lobby_title_font: Any,
+    lobby_button_font: Any,
+    user_label_font: Any,
+    player_name_font: Any,
     state: ClientAppState,
     form: dict[str, str],
     login_stage: str,
@@ -279,20 +311,20 @@ def _draw_ui(
 ) -> None:
     """Render the current frontend state."""
     _draw_panels(pygame, screen)
-    _draw_text(screen, font, f"User: {state.username or 'Not logged in'}", 20, 20)
     if state.last_error:
         _draw_text(screen, small_font, f"Error: {state.last_error}", 20, 50, color=(255, 120, 120))
 
     if state.phase == "login":
         _draw_login(screen, pygame, font, small_font, form, login_stage, active_field_index)
     elif state.phase == "lobby":
-        _draw_lobby(screen, font, small_font, state)
+        _draw_lobby(screen, pygame, font, small_font, lobby_title_font, lobby_button_font, state)
     elif state.phase == "match":
-        _draw_match(screen, pygame, font, small_font, state)
+        _draw_match(screen, pygame, font, small_font, player_name_font, state)
     elif state.phase == "game_over":
         _draw_game_over(screen, font, small_font, state)
     else:
         _draw_text(screen, font, "Connecting...", 20, 90)
+    _draw_user_label(screen, user_label_font, state)
 
 
 def _draw_panels(pygame: Any, screen: Any) -> None:
@@ -349,38 +381,73 @@ def _draw_login(
         _draw_text(screen, small_font, f"Connected to {form['host']}:{form['port']}", 40, 300)
 
 
-def _draw_lobby(screen: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
-    _draw_text(screen, font, "Lobby", 20, 90)
-    _draw_text(screen, small_font, "Keys: Up/Down select, Enter challenge, W wait, A accept, S spectate", 20, 120)
-    y = 170
-    _draw_text(screen, small_font, "Online users:", 20, y)
+def _draw_lobby(
+    screen: Any,
+    pygame: Any,
+    font: Any,
+    small_font: Any,
+    lobby_title_font: Any,
+    lobby_button_font: Any,
+    state: ClientAppState,
+) -> None:
+    _draw_text(screen, lobby_title_font, "PITHON ARENA", LOBBY_PADDING_X, LOBBY_TITLE_Y)
+    _draw_text(screen, font, "ONLINE PLAYERS", LOBBY_PADDING_X, LOBBY_LIST_Y - 44)
+    y = LOBBY_LIST_Y
     users = challengeable_users(state)
     if not users:
         state.selected_lobby_index = 0
     for index, username in enumerate(users):
-        y += 26
+        y += 30
         waiting_tag = " (waiting)" if username in state.waiting_players else ""
-        prefix = ">" if index == (state.selected_lobby_index % len(users)) else "-"
-        _draw_text(screen, small_font, f"{prefix} {username}{waiting_tag}", 40, y)
+        prefix = ">" if index == (state.selected_lobby_index % len(users)) else " "
+        color = NEON_PINK if index == (state.selected_lobby_index % len(users)) else TEXT_COLOR
+        _draw_text(screen, small_font, f"{prefix} {username}{waiting_tag}", LOBBY_PADDING_X, y, color=color)
 
     if not users:
-        y += 26
-        _draw_text(screen, small_font, "No other online players available yet.", 40, y)
+        y += 30
+        _draw_text(screen, small_font, "No other online players available yet.", LOBBY_PADDING_X, y)
 
     if state.challenger_username:
-        _draw_text(screen, small_font, f"Incoming challenge from: {state.challenger_username}", 420, 170)
+        _draw_text(screen, small_font, f"Incoming invite from {state.challenger_username}", LOBBY_PADDING_X, y + 48)
     if state.outgoing_challenge_target:
-        _draw_text(screen, small_font, f"Outgoing challenge to: {state.outgoing_challenge_target}", 420, 200)
+        _draw_text(screen, small_font, f"Outgoing invite to {state.outgoing_challenge_target}", LOBBY_PADDING_X, y + 78)
+
+    button_y = max(LOBBY_BUTTON_Y, y + 130)
+    buttons = [
+        ("INVITE", _invite_enabled(state)),
+        ("ACCEPT", state.challenger_username is not None),
+        ("WATCH", True),
+    ]
+    button_x = LOBBY_PADDING_X
+    for label, enabled in buttons:
+        _draw_lobby_button(
+            screen,
+            pygame,
+            lobby_button_font,
+            label,
+            button_x,
+            button_y,
+            enabled=enabled,
+        )
+        button_x += LOBBY_BUTTON_WIDTH + LOBBY_BUTTON_GAP
+
+    _draw_text(
+        screen,
+        small_font,
+        "Up/Down selects player. Enter invites. A accepts invites. S watches.",
+        LOBBY_PADDING_X,
+        button_y + LOBBY_BUTTON_HEIGHT + 28,
+    )
 
 
-def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
+def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_name_font: Any, state: ClientAppState) -> None:
     match = state.match_state or {}
     board = match.get("board", {"width": 30, "height": 20})
     snakes = match.get("snakes", {})
     pies = match.get("pies", [])
     obstacles = match.get("obstacles", [])
     board_width_px = int(board["width"]) * CELL_SIZE
-    timer_x = BOARD_OFFSET_X + board_width_px // 2 - 70
+    timer_x = BOARD_OFFSET_X + board_width_px // 2 - 110
     _draw_text(screen, small_font, f"Time Left: {remaining_seconds(match)}s", timer_x, 46)
 
     board_rect = pygame.Rect(
@@ -411,12 +478,13 @@ def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, state: Cli
     players = list(snakes.items())
     if players:
         left_username, left_snake = players[0]
-        _draw_player_status(screen, pygame, small_font, left_username, left_snake, BOARD_OFFSET_X, 22, NEON_BLUE)
+        _draw_player_status(screen, pygame, player_name_font, small_font, left_username, left_snake, BOARD_OFFSET_X, 22, NEON_BLUE)
     if len(players) > 1:
         right_username, right_snake = players[1]
         _draw_player_status(
             screen,
             pygame,
+            player_name_font,
             small_font,
             right_username,
             right_snake,
@@ -452,6 +520,7 @@ def _draw_game_over(screen: Any, font: Any, small_font: Any, state: ClientAppSta
 def _draw_player_status(
     screen: Any,
     pygame: Any,
+    name_font: Any,
     font: Any,
     username: str,
     snake: dict[str, Any],
@@ -459,9 +528,81 @@ def _draw_player_status(
     y: int,
     color: tuple[int, int, int],
 ) -> None:
-    _draw_text(screen, font, username, x, y, color=color)
+    _draw_text(screen, name_font, username, x, y, color=color)
     _draw_health_bar(screen, pygame, x, y + 28, 160, 16, int(snake.get("health", 0)), color)
     _draw_text(screen, font, f"Health {snake.get('health', 0)}", x, y + 52)
+
+
+def _draw_lobby_button(
+    screen: Any,
+    pygame: Any,
+    font: Any,
+    label: str,
+    x: int,
+    y: int,
+    enabled: bool,
+) -> None:
+    rect = pygame.Rect(x, y, LOBBY_BUTTON_WIDTH, LOBBY_BUTTON_HEIGHT)
+    border_color = NEON_PINK if enabled else (120, 80, 110)
+    fill_color = (40, 8, 28) if enabled else (20, 20, 20)
+    pygame.draw.rect(screen, fill_color, rect)
+    pygame.draw.rect(screen, border_color, rect, 2)
+    text_color = TEXT_COLOR if enabled else (150, 150, 150)
+    text_surface = font.render(label, True, text_color)
+    text_rect = text_surface.get_rect(center=rect.center)
+    screen.blit(text_surface, text_rect)
+
+
+def _draw_user_label(screen: Any, font: Any, state: ClientAppState) -> None:
+    username = state.username or "Not logged in"
+    label_surface = font.render(f"USER {username}", True, NEON_PINK)
+    total_width = label_surface.get_width()
+    x = WINDOW_WIDTH - 18 - total_width
+    y = WINDOW_HEIGHT - 14 - label_surface.get_height()
+    screen.blit(label_surface, (x, y))
+
+
+def _invite_enabled(state: ClientAppState) -> bool:
+    users = challengeable_users(state)
+    if not users:
+        return False
+    selected = users[state.selected_lobby_index % len(users)]
+    return state.challenger_username != selected
+
+
+def _lobby_button_rect(label: str) -> tuple[int, int, int, int]:
+    labels = ["INVITE", "ACCEPT", "WATCH"]
+    index = labels.index(label)
+    x = LOBBY_PADDING_X + index * (LOBBY_BUTTON_WIDTH + LOBBY_BUTTON_GAP)
+    return (x, LOBBY_BUTTON_Y, LOBBY_BUTTON_WIDTH, LOBBY_BUTTON_HEIGHT)
+
+
+def _handle_mouse_click(client: ArenaClient, state: ClientAppState, position: tuple[int, int]) -> None:
+    if state.phase != "lobby":
+        return
+
+    x, y = position
+    button_states = {
+        "INVITE": _invite_enabled(state),
+        "ACCEPT": state.challenger_username is not None,
+        "WATCH": True,
+    }
+    for label, enabled in button_states.items():
+        if not enabled:
+            continue
+        rect_x, rect_y, rect_w, rect_h = _lobby_button_rect(label)
+        if rect_x <= x <= rect_x + rect_w and rect_y <= y <= rect_y + rect_h:
+            if label == "INVITE":
+                users = challengeable_users(state)
+                if not users:
+                    return
+                selected = users[state.selected_lobby_index % len(users)]
+                client.send(message_types.CHALLENGE_PLAYER, {"target_username": selected})
+            elif label == "ACCEPT" and state.challenger_username:
+                client.send(message_types.CHALLENGE_ACCEPT, {"challenger_username": state.challenger_username})
+            elif label == "WATCH":
+                client.send(message_types.WATCH_MATCH, {})
+            return
 
 
 def _draw_health_bar(

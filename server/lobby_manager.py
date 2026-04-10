@@ -6,7 +6,7 @@ from threading import Lock
 
 
 class LobbyManager:
-    """Track waiting players and pending challenges."""
+    """Track waiting players and pending invites."""
 
     def __init__(self) -> None:
         self._lock = Lock()
@@ -24,7 +24,7 @@ class LobbyManager:
             }
 
     def clear_player(self, username: str) -> None:
-        """Remove a player from waiting and challenge state."""
+        """Remove a player from waiting and invite state."""
         with self._lock:
             self._waiting_players.discard(username)
             self._pending_challenges.pop(username, None)
@@ -34,43 +34,59 @@ class LobbyManager:
                 if challenger != username
             }
 
+    def clear_all_invites(self) -> None:
+        """Remove every pending invite while leaving waiting players intact."""
+        with self._lock:
+            self._pending_challenges.clear()
+
     def issue_challenge(self, challenger: str, target: str, online_users: set[str]) -> tuple[bool, str]:
-        """Create a pending challenge between two online users."""
+        """Create a pending invite between two online users."""
         with self._lock:
             if challenger == target:
-                return False, "You cannot challenge yourself."
+                return False, "You cannot invite yourself."
             if target not in online_users:
                 return False, "Target player is not online."
             if challenger not in online_users:
                 return False, "Challenger is not online."
+            if self._pending_challenges.get(challenger) == target:
+                return False, "You already have a pending invite from this player."
             if target in self._pending_challenges:
-                return False, "Target player already has a pending challenge."
-            if challenger in self._pending_challenges.values():
-                return False, "Challenger already has a pending outgoing challenge."
+                pending_challenger = self._pending_challenges[target]
+                if pending_challenger == challenger:
+                    return True, f"{challenger} invited {target}."
+                return False, "Target player already has a pending invite."
+
+            previous_target = None
+            for pending_target, pending_challenger in self._pending_challenges.items():
+                if pending_challenger == challenger:
+                    previous_target = pending_target
+                    break
+            if previous_target is not None:
+                self._pending_challenges.pop(previous_target, None)
 
             self._waiting_players.discard(challenger)
             self._pending_challenges[target] = challenger
-            return True, f"{challenger} challenged {target}."
+            return True, f"{challenger} invited {target}."
 
     def accept_challenge(self, target: str, challenger: str) -> tuple[bool, str]:
-        """Accept a pending challenge if it matches the stored request."""
+        """Accept a pending invite if it matches the stored request."""
         with self._lock:
             pending_challenger = self._pending_challenges.get(target)
             if pending_challenger != challenger:
-                return False, "No matching challenge to accept."
+                return False, "No matching invite to accept."
 
             self._pending_challenges.pop(target, None)
             self._waiting_players.discard(target)
             self._waiting_players.discard(challenger)
-            return True, "Challenge accepted."
+            return True, "Invite accepted."
 
     def restore_challenge(self, target: str, challenger: str) -> None:
-        """Restore a challenge after a failed match start."""
+        """Restore an invite after a failed match start."""
         with self._lock:
             self._pending_challenges[target] = challenger
 
     def cancel_challenge(self, target: str, challenger: str) -> None:
-        """Remove a specific pending challenge if it still matches."""
+        """Remove a specific pending invite if it still matches."""
         with self._lock:
             if self._pending_challenges.get(target) == challenger:
                 self._pending_challenges.pop(target, None)

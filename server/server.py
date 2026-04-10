@@ -213,7 +213,7 @@ class PythonArenaServer:
                 continue
 
     def handle_challenge_player(self, session: UserSession, payload: dict[str, object]) -> None:
-        """Handle a challenge request from one player to another."""
+        """Handle an invite request from one player to another."""
         if session.username is None:
             return
 
@@ -244,7 +244,7 @@ class PythonArenaServer:
                 session.socket,
                 make_message(
                     message_types.ERROR,
-                    {"message": "Target player is no longer reachable. Challenge was canceled."},
+                    {"message": "Target player is no longer reachable. Invite was canceled."},
                 ),
             )
             self.broadcast_online_users()
@@ -368,6 +368,7 @@ class PythonArenaServer:
                 return False, "busy"
             if any(self.user_registry.get_session(username) is None for username in players):
                 return False, "offline"
+            self.lobby_manager.clear_all_invites()
             match = Match(players=players)
             self.active_match = match
             initial_state = match.to_state_payload()
@@ -383,16 +384,6 @@ class PythonArenaServer:
                 ),
             )
         self._send_chat_peer_info(players)
-        for spectator in self.get_spectators():
-            if spectator in players:
-                continue
-            self._safe_send(
-                self.user_registry.get_session(spectator),
-                make_message(
-                    message_types.MATCH_START,
-                    {"players": players, "state": initial_state, "spectator": True},
-                ),
-            )
 
         self._match_thread = threading.Thread(target=self.run_match_loop, args=(match,), daemon=True)
         self._match_thread.start()
