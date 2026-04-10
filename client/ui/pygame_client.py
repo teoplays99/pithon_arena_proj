@@ -4,25 +4,54 @@ from __future__ import annotations
 
 import queue
 import threading
+from pathlib import Path
 from typing import Any
 
 from client.networking.client import ArenaClient
-from client.state.controller import apply_server_message
+from client.state.controller import apply_server_message, return_to_lobby
 from client.state.models import ClientAppState
 from common import message_types
-from common.constants import DEFAULT_HOST, DEFAULT_PORT
+from common.constants import DEFAULT_HOST, DEFAULT_PORT, SERVER_TICK_RATE
 
 
 WINDOW_WIDTH = 960
 WINDOW_HEIGHT = 640
-CELL_SIZE = 24
-BOARD_OFFSET_X = 40
-BOARD_OFFSET_Y = 80
+CELL_SIZE = 18
+LEFT_PANEL_WIDTH = 120
+RIGHT_PANEL_WIDTH = 180
+TOP_PANEL_HEIGHT = 120
+BOARD_OFFSET_X = 20
+BOARD_OFFSET_Y = TOP_PANEL_HEIGHT + 20
+BACKGROUND_COLOR = (0, 0, 0)
+PANEL_COLOR = (0, 0, 0)
+BOARD_COLOR = (40, 44, 56)
+BOARD_BORDER = (120, 126, 148)
+NEON_BLUE = (0, 214, 255)
+NEON_PINK = (255, 60, 190)
+NEON_GREEN = (57, 255, 20)
+TEXT_COLOR = (236, 236, 236)
+FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "Monocraft.ttc"
 
 
 def challengeable_users(state: ClientAppState) -> list[str]:
     """Return online users that can be challenged from the lobby."""
     return [username for username in state.online_users if username and username != state.username]
+
+
+def lighten_color(color: tuple[int, int, int], amount: int = 55) -> tuple[int, int, int]:
+    """Return a lighter shade for snake heads."""
+    return tuple(min(255, channel + amount) for channel in color)
+
+
+def remaining_seconds(match_state: dict[str, Any]) -> int:
+    """Convert server ticks into display seconds."""
+    ticks = int(match_state.get("remaining_ticks", 0))
+    return max(0, (ticks + SERVER_TICK_RATE - 1) // SERVER_TICK_RATE)
+
+
+def should_render_snake(snake: dict[str, Any]) -> bool:
+    """Blink stunned snakes twice during the collision freeze."""
+    return int(snake.get("stun_ticks_remaining", 0)) not in {5, 3}
 
 
 def default_login_form(
@@ -56,8 +85,8 @@ def run_pygame_client(
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
     pygame.display.set_caption("Python Arena Client")
     clock = pygame.time.Clock()
-    font = pygame.font.SysFont(None, 28)
-    small_font = pygame.font.SysFont(None, 22)
+    font = pygame.font.Font(str(FONT_PATH), 24)
+    small_font = pygame.font.Font(str(FONT_PATH), 18)
 
     client = ArenaClient()
     state = ClientAppState()
@@ -157,7 +186,7 @@ def run_pygame_client(
                     if state.phase == "login" and not state.username and client._socket is None:
                         login_stage = "connect"
 
-            screen.fill((20, 24, 32))
+            screen.fill(BACKGROUND_COLOR)
             _draw_ui(pygame, screen, font, small_font, state, form, login_stage, active_field_index)
             pygame.display.flip()
             clock.tick(30)
@@ -220,6 +249,8 @@ def _handle_keydown(
         client.send(message_types.WATCH_MATCH, {})
     elif key == pygame.K_c and state.phase in {"lobby", "match"}:
         client.send(message_types.CHEER, {"text": "Let's go!"})
+    elif key == pygame.K_l and state.phase == "game_over":
+        return_to_lobby(state)
     elif key in (pygame.K_UP, pygame.K_DOWN) and state.phase == "lobby":
         users = challengeable_users(state)
         if not users:
@@ -247,18 +278,30 @@ def _draw_ui(
     active_field_index: int,
 ) -> None:
     """Render the current frontend state."""
+    _draw_panels(pygame, screen)
     _draw_text(screen, font, f"User: {state.username or 'Not logged in'}", 20, 20)
     if state.last_error:
-        _draw_text(screen, small_font, f"Error: {state.last_error}", 20, 48, color=(255, 120, 120))
+        _draw_text(screen, small_font, f"Error: {state.last_error}", 20, 50, color=(255, 120, 120))
 
     if state.phase == "login":
         _draw_login(screen, pygame, font, small_font, form, login_stage, active_field_index)
     elif state.phase == "lobby":
         _draw_lobby(screen, font, small_font, state)
-    elif state.phase in {"match", "game_over"}:
+    elif state.phase == "match":
         _draw_match(screen, pygame, font, small_font, state)
+    elif state.phase == "game_over":
+        _draw_game_over(screen, font, small_font, state)
     else:
         _draw_text(screen, font, "Connecting...", 20, 90)
+
+
+def _draw_panels(pygame: Any, screen: Any) -> None:
+    pygame.draw.rect(screen, PANEL_COLOR, pygame.Rect(0, 0, WINDOW_WIDTH - RIGHT_PANEL_WIDTH, TOP_PANEL_HEIGHT))
+    pygame.draw.rect(
+        screen,
+        PANEL_COLOR,
+        pygame.Rect(WINDOW_WIDTH - RIGHT_PANEL_WIDTH, 0, RIGHT_PANEL_WIDTH, WINDOW_HEIGHT),
+    )
 
 
 def _draw_login(
@@ -336,58 +379,113 @@ def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, state: Cli
     snakes = match.get("snakes", {})
     pies = match.get("pies", [])
     obstacles = match.get("obstacles", [])
-
-    _draw_text(screen, font, "Spectator Mode" if state.spectator else "Match", 20, 90)
-    _draw_text(screen, small_font, "Arrow keys move. C sends a cheer.", 20, 120)
-    _draw_text(screen, small_font, f"Remaining ticks: {match.get('remaining_ticks', 0)}", 20, 148)
+    board_width_px = int(board["width"]) * CELL_SIZE
+    timer_x = BOARD_OFFSET_X + board_width_px // 2 - 70
+    _draw_text(screen, small_font, f"Time Left: {remaining_seconds(match)}s", timer_x, 46)
 
     board_rect = pygame.Rect(
         BOARD_OFFSET_X,
         BOARD_OFFSET_Y,
-        int(board["width"]) * CELL_SIZE,
+        board_width_px,
         int(board["height"]) * CELL_SIZE,
     )
-    pygame.draw.rect(screen, (40, 44, 56), board_rect)
-    pygame.draw.rect(screen, (120, 126, 148), board_rect, 2)
+    pygame.draw.rect(screen, BOARD_COLOR, board_rect)
+    pygame.draw.rect(screen, BOARD_BORDER, board_rect, 2)
 
     for obstacle in obstacles:
         _draw_cell(pygame, screen, obstacle[0], obstacle[1], (110, 110, 110))
     for pie in pies:
-        color = (80, 200, 120) if pie.get("kind") == "green" else (220, 190, 70)
+        color = NEON_GREEN
         _draw_cell(pygame, screen, pie["x"], pie["y"], color)
 
-    snake_colors = [(70, 160, 255), (255, 120, 120)]
+    snake_colors = [NEON_BLUE, NEON_PINK]
     for color, (username, snake) in zip(snake_colors, snakes.items()):
-        for segment in snake.get("body", []):
+        if not should_render_snake(snake):
+            continue
+        body = snake.get("body", [])
+        for segment in body[1:]:
             _draw_cell(pygame, screen, segment[0], segment[1], color)
+        if body:
+            _draw_cell(pygame, screen, body[0][0], body[0][1], lighten_color(color))
 
-    info_y = 170
-    for username, snake in snakes.items():
-        _draw_text(screen, small_font, f"{username}: health {snake.get('health', 0)}", 780, info_y)
-        info_y += 26
+    players = list(snakes.items())
+    if players:
+        left_username, left_snake = players[0]
+        _draw_player_status(screen, pygame, small_font, left_username, left_snake, BOARD_OFFSET_X, 22, NEON_BLUE)
+    if len(players) > 1:
+        right_username, right_snake = players[1]
+        _draw_player_status(
+            screen,
+            pygame,
+            small_font,
+            right_username,
+            right_snake,
+            BOARD_OFFSET_X + board_rect.width - 180,
+            22,
+            NEON_PINK,
+        )
 
     cheers = match.get("cheers", [])
+    _draw_text(screen, font, "Cheers", WINDOW_WIDTH - RIGHT_PANEL_WIDTH + 20, 20)
     if cheers:
-        _draw_text(screen, small_font, "Cheers:", 780, 280)
-        y = 306
-        for cheer in cheers[-5:]:
-            _draw_text(screen, small_font, f"{cheer['from']}: {cheer['text']}", 780, y)
-            y += 22
+        y = 60
+        for cheer in cheers[-8:]:
+            _draw_text(screen, small_font, f"{cheer['from']}: {cheer['text']}", WINDOW_WIDTH - RIGHT_PANEL_WIDTH + 20, y)
+            y += 24
+    else:
+        _draw_text(screen, small_font, "No cheers yet.", WINDOW_WIDTH - RIGHT_PANEL_WIDTH + 20, 60)
 
-    if state.phase == "game_over" and state.game_over:
-        winner = state.game_over.get("winner")
-        reason = state.game_over.get("state", {}).get("reason")
-        _draw_text(screen, font, f"Game Over - Winner: {winner}", 20, 580, color=(255, 220, 120))
-        if reason:
-            _draw_text(screen, small_font, f"Reason: {reason}", 420, 580, color=(255, 220, 120))
+    _draw_text(screen, small_font, "Arrow keys move. C cheers.", 20, WINDOW_HEIGHT - 40)
+
+
+def _draw_game_over(screen: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
+    game_over = state.game_over or {}
+    winner = game_over.get("winner")
+    reason = game_over.get("state", {}).get("reason") or game_over.get("reason")
+    _draw_text(screen, font, "Game Over", 20, 120, color=NEON_PINK)
+    _draw_text(screen, font, f"Winner: {winner}", 20, 180, color=NEON_PINK)
+    if reason:
+        _draw_text(screen, small_font, f"Reason: {reason}", 20, 230, color=NEON_PINK)
+    _draw_text(screen, small_font, "Press L to return to lobby.", 20, 300, color=TEXT_COLOR)
+
+
+def _draw_player_status(
+    screen: Any,
+    pygame: Any,
+    font: Any,
+    username: str,
+    snake: dict[str, Any],
+    x: int,
+    y: int,
+    color: tuple[int, int, int],
+) -> None:
+    _draw_text(screen, font, username, x, y, color=color)
+    _draw_health_bar(screen, pygame, x, y + 28, 160, 16, int(snake.get("health", 0)), color)
+    _draw_text(screen, font, f"Health {snake.get('health', 0)}", x, y + 52)
+
+
+def _draw_health_bar(
+    screen: Any,
+    pygame: Any,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    health: int,
+    color: tuple[int, int, int],
+) -> None:
+    pygame.draw.rect(screen, (56, 60, 70), pygame.Rect(x, y, width, height))
+    fill_width = max(0, min(width, int(width * (max(0, health) / 100))))
+    pygame.draw.rect(screen, color, pygame.Rect(x, y, fill_width, height))
+    pygame.draw.rect(screen, BOARD_BORDER, pygame.Rect(x, y, width, height), 2)
 
 
 def _draw_cell(pygame: Any, screen: Any, x: int, y: int, color: tuple[int, int, int]) -> None:
     rect = pygame.Rect(
         BOARD_OFFSET_X + x * CELL_SIZE,
         BOARD_OFFSET_Y + y * CELL_SIZE,
-        CELL_SIZE - 1,
-        CELL_SIZE - 1,
+        CELL_SIZE,
+        CELL_SIZE,
     )
     pygame.draw.rect(screen, color, rect)
 

@@ -8,6 +8,19 @@ from client.state.models import ClientAppState
 from common import message_types
 
 
+def return_to_lobby(state: ClientAppState) -> ClientAppState:
+    """Reset transient match UI state and show the lobby again."""
+    state.phase = "lobby"
+    state.match_state = None
+    state.game_over = None
+    state.spectator = False
+    state.disconnected_player = None
+    state.challenger_username = None
+    state.outgoing_challenge_target = None
+    state.last_error = None
+    return state
+
+
 def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> ClientAppState:
     """Mutate the lightweight app state according to one server message."""
     message_type = message["type"]

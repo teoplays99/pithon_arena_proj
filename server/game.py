@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass, field
 
 from common.constants import BOARD_HEIGHT, BOARD_WIDTH, INITIAL_HEALTH, MATCH_DURATION_TICKS, MIN_PIE_COUNT
@@ -29,6 +30,7 @@ WALL_DAMAGE = 15
 OBSTACLE_DAMAGE = 10
 BODY_DAMAGE = 20
 HEAD_ON_DAMAGE = 15
+COLLISION_FREEZE_TICKS = 5
 PIE_HEALTH = {
     "green": 10,
     "gold": 20,
@@ -43,6 +45,8 @@ class SnakeState:
     body: list[tuple[int, int]]
     direction: str
     health: int = INITIAL_HEALTH
+    stun_ticks_remaining: int = 0
+    recovery_direction: str | None = None
 
 
 @dataclass
@@ -101,7 +105,11 @@ class Match:
         if self.game_over:
             return self.to_state_payload()
 
+        self._advance_collision_freeze()
+
         for username, snake in self.snakes.items():
+            if snake.stun_ticks_remaining > 0:
+                continue
             queued_direction = self.pending_inputs.get(username)
             if queued_direction and OPPOSITES[snake.direction] != queued_direction:
                 snake.direction = queued_direction
@@ -110,40 +118,57 @@ class Match:
 
         proposed_heads: dict[str, tuple[int, int]] = {}
         for username, snake in self.snakes.items():
+            if snake.stun_ticks_remaining > 0:
+                proposed_heads[username] = snake.body[0]
+                continue
             dx, dy = VECTORS[snake.direction]
             head_x, head_y = snake.body[0]
             proposed_heads[username] = (head_x + dx, head_y + dy)
 
         future_bodies: dict[str, list[tuple[int, int]]] = {}
         for username, snake in self.snakes.items():
-            future_bodies[username] = [proposed_heads[username]] + snake.body[:-1]
+            if snake.stun_ticks_remaining > 0:
+                future_bodies[username] = list(snake.body)
+            else:
+                future_bodies[username] = [proposed_heads[username]] + snake.body[:-1]
 
         collisions: dict[str, int] = {username: 0 for username in self.players}
+        collided_players: set[str] = set()
         if proposed_heads[self.players[0]] == proposed_heads[self.players[1]]:
             for username in self.players:
                 collisions[username] += HEAD_ON_DAMAGE
+                collided_players.add(username)
 
         for username in self.players:
+            snake = self.snakes[username]
+            if snake.stun_ticks_remaining > 0:
+                continue
             head = proposed_heads[username]
             if not self._is_in_bounds(head):
                 collisions[username] += WALL_DAMAGE
+                collided_players.add(username)
             if head in self.obstacles:
                 collisions[username] += OBSTACLE_DAMAGE
+                collided_players.add(username)
 
             own_future_body = future_bodies[username][1:]
             if head in own_future_body:
                 collisions[username] += BODY_DAMAGE
+                collided_players.add(username)
 
             for other_username, other_body in future_bodies.items():
                 if other_username == username:
                     continue
                 if head in other_body[1:]:
                     collisions[username] += BODY_DAMAGE
+                    collided_players.add(username)
                     break
 
         for username, snake in self.snakes.items():
             if collisions[username] > 0:
                 snake.health = max(0, snake.health - collisions[username])
+                snake.stun_ticks_remaining = COLLISION_FREEZE_TICKS
+                snake.recovery_direction = self._recovery_direction_for(snake.direction)
             else:
                 snake.body = future_bodies[username]
                 self._collect_pie_if_present(username)
@@ -176,6 +201,15 @@ class Match:
         if len(self.cheers) > limit:
             self.cheers = self.cheers[-limit:]
 
+    def _advance_collision_freeze(self) -> None:
+        for snake in self.snakes.values():
+            if snake.stun_ticks_remaining <= 0:
+                continue
+            snake.stun_ticks_remaining -= 1
+            if snake.stun_ticks_remaining == 0 and snake.recovery_direction is not None:
+                snake.direction = snake.recovery_direction
+                snake.recovery_direction = None
+
     def _is_in_bounds(self, position: tuple[int, int]) -> bool:
         x, y = position
         return 0 <= x < self.board_width and 0 <= y < self.board_height
@@ -199,23 +233,28 @@ class Match:
             self.pies.pop(index)
             return
 
+    def _recovery_direction_for(self, direction: str) -> str:
+        recovery_map = {
+            UP: LEFT,
+            DOWN: RIGHT,
+            LEFT: DOWN,
+            RIGHT: UP,
+        }
+        return recovery_map[direction]
+
     def _ensure_minimum_pies(self) -> None:
-        next_kind = "green"
         while len(self.pies) < MIN_PIE_COUNT:
             occupied = self._occupied_positions()
-            for y in range(self.board_height):
-                for x in range(self.board_width):
-                    if (x, y) in occupied:
-                        continue
-                    self.pies.append({"x": x, "y": y, "kind": next_kind})
-                    next_kind = "gold" if next_kind == "green" else "green"
-                    occupied.add((x, y))
-                    break
-                else:
-                    continue
-                break
-            else:
+            free_cells = [
+                (x, y)
+                for y in range(self.board_height)
+                for x in range(self.board_width)
+                if (x, y) not in occupied
+            ]
+            if not free_cells:
                 return
+            x, y = random.choice(free_cells)
+            self.pies.append({"x": x, "y": y, "kind": "green"})
 
     def _determine_winner(self) -> str | None:
         sorted_snakes = sorted(
@@ -238,6 +277,7 @@ class Match:
                     "body": [list(segment) for segment in snake.body],
                     "direction": snake.direction,
                     "health": snake.health,
+                    "stun_ticks_remaining": snake.stun_ticks_remaining,
                 }
                 for username, snake in self.snakes.items()
             },
