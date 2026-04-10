@@ -80,6 +80,14 @@ class LobbyManager:
         with self._lock:
             return self._pending_challenges.get(target)
 
+    def pending_target_for(self, challenger: str) -> str | None:
+        """Return the current pending target for a challenger, if any."""
+        with self._lock:
+            for target, pending_challenger in self._pending_challenges.items():
+                if pending_challenger == challenger:
+                    return target
+            return None
+
     def is_waiting(self, username: str) -> bool:
         """Return whether a user is currently marked as waiting."""
         with self._lock:

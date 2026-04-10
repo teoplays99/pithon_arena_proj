@@ -204,6 +204,8 @@ class PythonArenaServer:
                             "users": usernames,
                             "waiting_players": waiting_players,
                             "active_match": self.active_match.to_state_payload() if self.active_match else None,
+                            "pending_challenger": self.lobby_manager.pending_challenger_for(username),
+                            "outgoing_challenge_target": self.lobby_manager.pending_target_for(username),
                         },
                     ),
                 )

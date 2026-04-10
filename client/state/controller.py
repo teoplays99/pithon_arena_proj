@@ -15,8 +15,6 @@ def return_to_lobby(state: ClientAppState) -> ClientAppState:
     state.game_over = None
     state.spectator = False
     state.disconnected_player = None
-    state.challenger_username = None
-    state.outgoing_challenge_target = None
     state.last_error = None
     return state
 
@@ -40,6 +38,10 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
     if message_type == message_types.ONLINE_USERS:
         state.online_users = list(payload.get("users", []))
         state.waiting_players = list(payload.get("waiting_players", []))
+        pending_challenger = payload.get("pending_challenger")
+        outgoing_target = payload.get("outgoing_challenge_target")
+        state.challenger_username = str(pending_challenger) if pending_challenger else None
+        state.outgoing_challenge_target = str(outgoing_target) if outgoing_target else None
         return state
 
     if message_type == message_types.WAITING:
@@ -59,6 +61,8 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         state.match_state = dict(payload.get("state", {}))
         state.spectator = bool(payload.get("spectator", False))
         state.game_over = None
+        state.challenger_username = None
+        state.outgoing_challenge_target = None
         state.last_error = None
         return state
 
