@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 
-from common.constants import DEFAULT_HOST, DEFAULT_PORT
+from common.constants import DEFAULT_PORT
 from server.server import PythonArenaServer
+
+
+DEFAULT_BIND_HOST = "0.0.0.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -17,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Port to listen on.",
     )
-    parser.add_argument("--host", default=DEFAULT_HOST, help="Host/IP to bind the server to.")
+    parser.add_argument("--host", default=DEFAULT_BIND_HOST, help="Host/IP to bind the server to.")
     parser.add_argument(
         "--port",
         dest="port_flag",
