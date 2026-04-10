@@ -63,14 +63,15 @@ class PythonArenaServer:
             finally:
                 self._server_socket = None
 
-    def _safe_send(self, session: UserSession | None, message: dict[str, object]) -> None:
+    def _safe_send(self, session: UserSession | None, message: dict[str, object]) -> bool:
         """Best-effort send that tolerates already-closed sockets."""
         if session is None:
-            return
+            return False
         try:
             send_message(session.socket, message)
+            return True
         except OSError:
-            return
+            return False
 
     def add_spectator(self, username: str) -> None:
         with self._spectator_lock:
@@ -215,6 +216,7 @@ class PythonArenaServer:
             return
 
         target = str(payload.get("target_username", "")).strip()
+        was_waiting = self.lobby_manager.is_waiting(session.username)
         success, message = self.lobby_manager.issue_challenge(
             session.username,
             target,
@@ -224,19 +226,33 @@ class PythonArenaServer:
             send_message(session.socket, make_message(message_types.ERROR, {"message": message}))
             return
 
+        target_session = self.user_registry.get_session(target)
+        delivered = self._safe_send(
+            target_session,
+            make_message(
+                message_types.CHALLENGE_RECEIVED,
+                {"challenger_username": session.username},
+            ),
+        )
+        if not delivered:
+            self.lobby_manager.cancel_challenge(target, session.username)
+            if was_waiting:
+                self.lobby_manager.set_waiting(session.username)
+            send_message(
+                session.socket,
+                make_message(
+                    message_types.ERROR,
+                    {"message": "Target player is no longer reachable. Challenge was canceled."},
+                ),
+            )
+            self.broadcast_online_users()
+            return
+
         send_message(
             session.socket,
             make_message(
                 message_types.CHALLENGE_PLAYER,
                 {"target_username": target, "message": message},
-            ),
-        )
-        target_session = self.user_registry.get_session(target)
-        self._safe_send(
-            target_session,
-            make_message(
-                message_types.CHALLENGE_RECEIVED,
-                {"challenger_username": session.username},
             ),
         )
         self.broadcast_online_users()

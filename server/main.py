@@ -10,10 +10,18 @@ from server.server import PythonArenaServer
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run the Python Arena server.")
+    parser.add_argument(
+        "port",
+        nargs="?",
+        default=None,
+        type=int,
+        help="Port to listen on.",
+    )
     parser.add_argument("--host", default=DEFAULT_HOST, help="Host/IP to bind the server to.")
     parser.add_argument(
         "--port",
-        default=DEFAULT_PORT,
+        dest="port_flag",
+        default=None,
         type=int,
         help="Port to listen on.",
     )
@@ -22,7 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
-    server = PythonArenaServer(host=args.host, port=args.port)
+    port = args.port if args.port is not None else args.port_flag
+    if port is None:
+        port = DEFAULT_PORT
+    server = PythonArenaServer(host=args.host, port=port)
     server.start()
 
 

@@ -162,7 +162,7 @@ Use a message envelope shaped like:
 {
   "type": "LOGIN",
   "payload": {
-    "username": "Ali"
+    "username": "Teo"
   }
 }
 ```

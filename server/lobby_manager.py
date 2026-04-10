@@ -45,6 +45,8 @@ class LobbyManager:
                 return False, "Challenger is not online."
             if target in self._pending_challenges:
                 return False, "Target player already has a pending challenge."
+            if challenger in self._pending_challenges.values():
+                return False, "Challenger already has a pending outgoing challenge."
 
             self._waiting_players.discard(challenger)
             self._pending_challenges[target] = challenger
@@ -67,10 +69,21 @@ class LobbyManager:
         with self._lock:
             self._pending_challenges[target] = challenger
 
+    def cancel_challenge(self, target: str, challenger: str) -> None:
+        """Remove a specific pending challenge if it still matches."""
+        with self._lock:
+            if self._pending_challenges.get(target) == challenger:
+                self._pending_challenges.pop(target, None)
+
     def pending_challenger_for(self, target: str) -> str | None:
         """Return the pending challenger for a target player."""
         with self._lock:
             return self._pending_challenges.get(target)
+
+    def is_waiting(self, username: str) -> bool:
+        """Return whether a user is currently marked as waiting."""
+        with self._lock:
+            return username in self._waiting_players
 
     def waiting_players(self) -> list[str]:
         """Return waiting players sorted for display."""

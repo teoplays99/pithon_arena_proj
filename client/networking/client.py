@@ -23,10 +23,13 @@ class ArenaClient:
             self._socket.close()
             self._socket = None
 
-    def login(self, username: str) -> dict[str, Any]:
+    def login(self, username: str, chat_port: int | None = None) -> dict[str, Any]:
         if self._socket is None:
             raise RuntimeError("Client is not connected.")
-        send_message(self._socket, make_message(message_types.LOGIN, {"username": username}))
+        payload: dict[str, Any] = {"username": username}
+        if chat_port is not None:
+            payload["chat_port"] = chat_port
+        send_message(self._socket, make_message(message_types.LOGIN, payload))
         return receive_message(self._socket)
 
     def receive(self) -> dict[str, Any]:

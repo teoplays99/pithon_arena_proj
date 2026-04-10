@@ -14,6 +14,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default=DEFAULT_HOST, help="Server host.")
     parser.add_argument("--port", default=DEFAULT_PORT, type=int, help="Server port.")
     parser.add_argument("--username", required=True, help="Username to register.")
+    parser.add_argument(
+        "--chat-port",
+        type=int,
+        default=None,
+        help="Local peer-chat listener port to advertise to the server.",
+    )
     return parser
 
 
@@ -22,7 +28,7 @@ def main() -> None:
     client = ArenaClient()
     try:
         client.connect(args.host, args.port)
-        login_response = client.login(args.username)
+        login_response = client.login(args.username, chat_port=args.chat_port)
         print(login_response)
         try:
             print(client.receive())
