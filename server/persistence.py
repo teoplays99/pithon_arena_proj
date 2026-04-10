@@ -11,63 +11,61 @@ class MatchHistoryStore:
 
     def __init__(self, db_path: str = "python_arena.db") -> None:
         self.db_path = Path(db_path)
+        self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._initialize()
 
     def _initialize(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS match_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    player_one TEXT NOT NULL,
-                    player_two TEXT NOT NULL,
-                    winner TEXT,
-                    reason TEXT,
-                    remaining_ticks INTEGER NOT NULL,
-                    cheer_count INTEGER NOT NULL,
-                    player_one_health INTEGER NOT NULL,
-                    player_two_health INTEGER NOT NULL
-                )
-                """
+        self._connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS match_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                player_one TEXT NOT NULL,
+                player_two TEXT NOT NULL,
+                winner TEXT,
+                reason TEXT,
+                remaining_ticks INTEGER NOT NULL,
+                cheer_count INTEGER NOT NULL,
+                player_one_health INTEGER NOT NULL,
+                player_two_health INTEGER NOT NULL
             )
-            connection.commit()
+            """
+        )
+        self._connection.commit()
 
     def save_match(self, state: dict[str, object]) -> None:
         players = list(state["players"])
         snakes = dict(state["snakes"])
-        with sqlite3.connect(self.db_path) as connection:
-            connection.execute(
-                """
-                INSERT INTO match_history (
-                    player_one, player_two, winner, reason, remaining_ticks,
-                    cheer_count, player_one_health, player_two_health
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    players[0],
-                    players[1],
-                    state.get("winner"),
-                    state.get("reason"),
-                    int(state["remaining_ticks"]),
-                    len(list(state.get("cheers", []))),
-                    int(snakes[players[0]]["health"]),
-                    int(snakes[players[1]]["health"]),
-                ),
-            )
-            connection.commit()
+        self._connection.execute(
+            """
+            INSERT INTO match_history (
+                player_one, player_two, winner, reason, remaining_ticks,
+                cheer_count, player_one_health, player_two_health
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                players[0],
+                players[1],
+                state.get("winner"),
+                state.get("reason"),
+                int(state["remaining_ticks"]),
+                len(list(state.get("cheers", []))),
+                int(snakes[players[0]]["health"]),
+                int(snakes[players[1]]["health"]),
+            ),
+        )
+        self._connection.commit()
 
     def list_recent_matches(self, limit: int = 10) -> list[dict[str, object]]:
-        with sqlite3.connect(self.db_path) as connection:
-            rows = connection.execute(
-                """
-                SELECT player_one, player_two, winner, reason, remaining_ticks,
-                       cheer_count, player_one_health, player_two_health
-                FROM match_history
-                ORDER BY id DESC
-                LIMIT ?
-                """,
-                (limit,),
-            ).fetchall()
+        rows = self._connection.execute(
+            """
+            SELECT player_one, player_two, winner, reason, remaining_ticks,
+                   cheer_count, player_one_health, player_two_health
+            FROM match_history
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
 
         return [
             {
@@ -82,3 +80,6 @@ class MatchHistoryStore:
             }
             for row in rows
         ]
+
+    def close(self) -> None:
+        self._connection.close()

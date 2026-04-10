@@ -36,3 +36,8 @@ class ArenaClient:
         if self._socket is None:
             raise RuntimeError("Client is not connected.")
         return receive_message(self._socket)
+
+    def send(self, message_type: str, payload: dict[str, Any] | None = None) -> None:
+        if self._socket is None:
+            raise RuntimeError("Client is not connected.")
+        send_message(self._socket, make_message(message_type, payload or {}))
