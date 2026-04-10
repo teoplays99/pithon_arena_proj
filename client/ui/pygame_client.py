@@ -40,6 +40,8 @@ LOBBY_BUTTON_Y = 420
 LOBBY_BUTTON_WIDTH = 180
 LOBBY_BUTTON_HEIGHT = 46
 LOBBY_BUTTON_GAP = 18
+INVITE_NOTICE_DURATION_MS = 1500
+INVITE_NOTICE_FLICKER_INTERVAL_MS = 250
 
 
 def challengeable_users(state: ClientAppState) -> list[str]:
@@ -61,6 +63,11 @@ def remaining_seconds(match_state: dict[str, Any]) -> int:
 def should_render_snake(snake: dict[str, Any]) -> bool:
     """Blink stunned snakes twice during the collision freeze."""
     return int(snake.get("stun_ticks_remaining", 0)) not in {5, 3}
+
+
+def invite_notice_color(elapsed_ms: int) -> tuple[int, int, int]:
+    """Alternate invite error colors for the short-lived lobby notice."""
+    return NEON_PINK if (elapsed_ms // INVITE_NOTICE_FLICKER_INTERVAL_MS) % 2 == 0 else NEON_BLUE
 
 
 def default_login_form(
@@ -100,12 +107,14 @@ def run_pygame_client(
     lobby_button_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 22)
     user_label_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 16)
     player_name_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 20)
+    lobby_player_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 22)
 
     client = ArenaClient()
     state = ClientAppState()
     inbound: queue.Queue[dict[str, Any]] = queue.Queue()
     running = True
     receiver_thread: threading.Thread | None = None
+    lobby_notice: dict[str, object] = {"message": None, "started_ms": 0}
     form = default_login_form(host, port, username, chat_port)
     login_stage = "connect"
     active_field_index = 0
@@ -181,6 +190,10 @@ def run_pygame_client(
                 except queue.Empty:
                     break
                 apply_server_message(state, message)
+                if state.phase == "lobby" and state.last_error:
+                    lobby_notice["message"] = state.last_error
+                    lobby_notice["started_ms"] = pygame.time.get_ticks()
+                    state.last_error = None
 
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
@@ -211,10 +224,12 @@ def run_pygame_client(
                 lobby_button_font,
                 user_label_font,
                 player_name_font,
+                lobby_player_font,
                 state,
                 form,
                 login_stage,
                 active_field_index,
+                lobby_notice,
             )
             pygame.display.flip()
             clock.tick(30)
@@ -304,20 +319,22 @@ def _draw_ui(
     lobby_button_font: Any,
     user_label_font: Any,
     player_name_font: Any,
+    lobby_player_font: Any,
     state: ClientAppState,
     form: dict[str, str],
     login_stage: str,
     active_field_index: int,
+    lobby_notice: dict[str, object],
 ) -> None:
     """Render the current frontend state."""
     _draw_panels(pygame, screen)
-    if state.last_error:
+    if state.last_error and state.phase != "lobby":
         _draw_text(screen, small_font, f"Error: {state.last_error}", 20, 50, color=(255, 120, 120))
 
     if state.phase == "login":
-        _draw_login(screen, pygame, font, small_font, form, login_stage, active_field_index)
+        _draw_login(screen, pygame, font, small_font, lobby_title_font, form, login_stage, active_field_index)
     elif state.phase == "lobby":
-        _draw_lobby(screen, pygame, font, small_font, lobby_title_font, lobby_button_font, state)
+        _draw_lobby(screen, pygame, font, small_font, lobby_title_font, lobby_button_font, lobby_player_font, state, lobby_notice)
     elif state.phase == "match":
         _draw_match(screen, pygame, font, small_font, player_name_font, state)
     elif state.phase == "game_over":
@@ -341,6 +358,7 @@ def _draw_login(
     pygame: Any,
     font: Any,
     small_font: Any,
+    title_font: Any,
     form: dict[str, str],
     login_stage: str,
     active_field_index: int,
@@ -361,13 +379,13 @@ def _draw_login(
             "username": "Username",
         }
 
-    _draw_text(screen, font, title, 20, 90)
+    _draw_text(screen, title_font, title, 20, 90)
     _draw_text(screen, small_font, hint, 20, 120)
     y = 180
     for index, field_name in enumerate(form_fields):
         is_active = index == active_field_index
         box = pygame.Rect(260, y - 6, 280, 34)
-        border = (255, 220, 120) if is_active else (120, 126, 148)
+        border = NEON_PINK if is_active else (120, 126, 148)
         fill = (34, 38, 50) if is_active else (28, 32, 42)
         _draw_text(screen, small_font, labels[field_name], 40, y)
         pygame.draw.rect(screen, fill, box)
@@ -388,12 +406,15 @@ def _draw_lobby(
     small_font: Any,
     lobby_title_font: Any,
     lobby_button_font: Any,
+    lobby_player_font: Any,
     state: ClientAppState,
+    lobby_notice: dict[str, object],
 ) -> None:
     _draw_text(screen, lobby_title_font, "PITHON ARENA", LOBBY_PADDING_X, LOBBY_TITLE_Y)
     _draw_text(screen, font, "ONLINE PLAYERS", LOBBY_PADDING_X, LOBBY_LIST_Y - 44)
     y = LOBBY_LIST_Y
     users = challengeable_users(state)
+    selected_y = LOBBY_LIST_Y + 30
     if not users:
         state.selected_lobby_index = 0
     for index, username in enumerate(users):
@@ -401,11 +422,28 @@ def _draw_lobby(
         waiting_tag = " (waiting)" if username in state.waiting_players else ""
         prefix = ">" if index == (state.selected_lobby_index % len(users)) else " "
         color = NEON_PINK if index == (state.selected_lobby_index % len(users)) else TEXT_COLOR
-        _draw_text(screen, small_font, f"{prefix} {username}{waiting_tag}", LOBBY_PADDING_X, y, color=color)
+        if index == (state.selected_lobby_index % len(users)):
+            selected_y = y
+        _draw_text(screen, lobby_player_font, f"{prefix} {username}{waiting_tag}", LOBBY_PADDING_X, y, color=color)
 
     if not users:
         y += 30
         _draw_text(screen, small_font, "No other online players available yet.", LOBBY_PADDING_X, y)
+
+    notice_message = lobby_notice.get("message")
+    if isinstance(notice_message, str):
+        elapsed_ms = int(pygame.time.get_ticks() - int(lobby_notice.get("started_ms", 0)))
+        if elapsed_ms < INVITE_NOTICE_DURATION_MS:
+            _draw_text(
+                screen,
+                small_font,
+                notice_message,
+                LOBBY_PADDING_X + 150,
+                selected_y,
+                color=invite_notice_color(elapsed_ms),
+            )
+        else:
+            lobby_notice["message"] = None
 
     if state.challenger_username:
         _draw_text(screen, small_font, f"Incoming invite from {state.challenger_username}", LOBBY_PADDING_X, y + 48)

@@ -94,44 +94,50 @@ class PythonArenaServer:
         """Handle the initial login flow for a client."""
         session = UserSession(address=address, socket=client_socket)
         try:
-            login_message = receive_message(client_socket)
-            if login_message["type"] != message_types.LOGIN:
+            while self._running.is_set() and session.username is None:
+                login_message = receive_message(client_socket)
+                if login_message["type"] != message_types.LOGIN:
+                    send_message(
+                        client_socket,
+                        make_message(
+                            message_types.ERROR,
+                            {"message": "Expected LOGIN before any other message."},
+                        ),
+                    )
+                    continue
+
+                username = str(login_message["payload"].get("username", "")).strip()
+                chat_port_raw = login_message["payload"].get("chat_port")
+                if not self.user_registry.register(username, session):
+                    send_message(
+                        client_socket,
+                        make_message(
+                            message_types.LOGIN_REJECT,
+                            {"message": "Username is invalid or already in use."},
+                        ),
+                    )
+                    continue
+
+                session.username = username
+                if isinstance(chat_port_raw, int) and 1 <= chat_port_raw <= 65535:
+                    session.chat_port = chat_port_raw
                 send_message(
                     client_socket,
                     make_message(
-                        message_types.ERROR,
-                        {"message": "Expected LOGIN as the first message."},
+                        message_types.LOGIN_OK,
+                        {
+                            "username": username,
+                            "online_users": self.user_registry.list_usernames(),
+                            "chat_port": session.chat_port,
+                        },
                     ),
                 )
+                self.broadcast_online_users()
+
+            if session.username is None:
                 return
 
-            username = str(login_message["payload"].get("username", "")).strip()
-            chat_port_raw = login_message["payload"].get("chat_port")
-            if not self.user_registry.register(username, session):
-                send_message(
-                    client_socket,
-                    make_message(
-                        message_types.LOGIN_REJECT,
-                        {"message": "Username is invalid or already in use."},
-                    ),
-                )
-                return
-
-            session.username = username
-            if isinstance(chat_port_raw, int) and 1 <= chat_port_raw <= 65535:
-                session.chat_port = chat_port_raw
-            send_message(
-                client_socket,
-                make_message(
-                    message_types.LOGIN_OK,
-                    {
-                        "username": username,
-                        "online_users": self.user_registry.list_usernames(),
-                        "chat_port": session.chat_port,
-                    },
-                ),
-            )
-            self.broadcast_online_users()
+            username = session.username
 
             while self._running.is_set():
                 try:
