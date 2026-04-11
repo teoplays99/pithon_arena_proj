@@ -23,3 +23,16 @@ class ClientAppState:
     last_error: str | None = None
     disconnected_player: str | None = None
     selected_lobby_index: int = 0
+    snake_color_name: str = "pink"
+    movement_keys: dict[str, int] = field(
+        default_factory=lambda: {
+            "UP": 1073741906,
+            "DOWN": 1073741905,
+            "LEFT": 1073741904,
+            "RIGHT": 1073741903,
+        }
+    )
+    settings_field_index: int = 0
+    rebinding_direction: str | None = None
+    preview_body: list[tuple[int, int]] = field(default_factory=lambda: [(6, 4), (5, 4), (4, 4)])
+    preview_direction: str = "RIGHT"

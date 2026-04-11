@@ -7,7 +7,7 @@ import threading
 import time
 
 from common import message_types
-from common.constants import SERVER_TICK_RATE
+from common.constants import SERVER_TICK_RATE, SNAKE_COLOR_PRESETS
 from common.protocol import ProtocolError, make_message, receive_message, send_message
 from server.game import Match
 from server.lobby_manager import LobbyManager
@@ -174,6 +174,8 @@ class PythonArenaServer:
                     self.handle_watch_match(session)
                 elif message["type"] == message_types.CHEER:
                     self.handle_cheer(session, message["payload"])
+                elif message["type"] == message_types.SETTINGS_UPDATE:
+                    self.handle_settings_update(session, message["payload"])
                 else:
                     send_message(
                         client_socket,
@@ -344,6 +346,15 @@ class PythonArenaServer:
                 ),
             )
 
+    def handle_settings_update(self, session: UserSession, payload: dict[str, object]) -> None:
+        """Store lightweight user settings that affect match presentation."""
+        color_name = str(payload.get("snake_color", "")).strip().lower()
+        if color_name not in SNAKE_COLOR_PRESETS:
+            self._safe_send(session, make_message(message_types.ERROR, {"message": "Invalid snake color."}))
+            return
+        session.snake_color = color_name
+        self._safe_send(session, make_message(message_types.SETTINGS_UPDATE, {"snake_color": color_name}))
+
     def handle_cheer(self, session: UserSession, payload: dict[str, object]) -> None:
         """Append a cheer to the active match and broadcast the updated state."""
         if session.username is None:
@@ -375,7 +386,15 @@ class PythonArenaServer:
             if any(self.user_registry.get_session(username) is None for username in players):
                 return False, "offline"
             self.lobby_manager.clear_all_invites()
-            match = Match(players=players)
+            snake_colors: dict[str, str] = {}
+            default_colors = ["blue", "pink"]
+            for index, username in enumerate(players):
+                player_session = self.user_registry.get_session(username)
+                if player_session is not None and player_session.snake_color in SNAKE_COLOR_PRESETS:
+                    snake_colors[username] = player_session.snake_color
+                else:
+                    snake_colors[username] = default_colors[index % len(default_colors)]
+            match = Match(players=players, snake_colors=snake_colors)
             self.active_match = match
             initial_state = match.to_state_payload()
 

@@ -9,3 +9,4 @@ BOARD_HEIGHT = 20
 INITIAL_HEALTH = 100
 MATCH_DURATION_TICKS = 600
 MIN_PIE_COUNT = 1
+SNAKE_COLOR_PRESETS = ("pink", "blue", "green", "orange", "purple", "yellow", "red")

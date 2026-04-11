@@ -60,6 +60,7 @@ class Match:
     obstacles: list[tuple[int, int]] = field(default_factory=list)
     pies: list[dict[str, int | str]] = field(default_factory=list)
     cheers: list[dict[str, str]] = field(default_factory=list)
+    snake_colors: dict[str, str] = field(default_factory=dict)
     winner: str | None = None
     reason: str | None = None
     game_over: bool = False
@@ -278,6 +279,7 @@ class Match:
                     "direction": snake.direction,
                     "health": snake.health,
                     "stun_ticks_remaining": snake.stun_ticks_remaining,
+                    "color": self.snake_colors.get(username),
                 }
                 for username, snake in self.snakes.items()
             },

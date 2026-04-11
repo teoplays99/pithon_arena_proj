@@ -48,6 +48,12 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         state.phase = "lobby"
         return state
 
+    if message_type == message_types.SETTINGS_UPDATE:
+        snake_color = payload.get("snake_color")
+        if snake_color:
+            state.snake_color_name = str(snake_color)
+        return state
+
     if message_type == message_types.CHALLENGE_RECEIVED:
         state.challenger_username = str(payload.get("challenger_username", ""))
         return state

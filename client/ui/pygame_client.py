@@ -7,17 +7,18 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import pygame
+
 from client.networking.client import ArenaClient
 from client.state.controller import apply_server_message, return_to_lobby
 from client.state.models import ClientAppState
 from common import message_types
-from common.constants import DEFAULT_HOST, DEFAULT_PORT, SERVER_TICK_RATE
+from common.constants import DEFAULT_HOST, DEFAULT_PORT, SERVER_TICK_RATE, SNAKE_COLOR_PRESETS
 
 
 WINDOW_WIDTH = 960
 WINDOW_HEIGHT = 640
 CELL_SIZE = 18
-LEFT_PANEL_WIDTH = 120
 RIGHT_PANEL_WIDTH = 180
 TOP_PANEL_HEIGHT = 120
 BOARD_OFFSET_X = 20
@@ -29,6 +30,10 @@ BOARD_BORDER = (120, 126, 148)
 NEON_BLUE = (0, 214, 255)
 NEON_PINK = (255, 60, 190)
 NEON_GREEN = (57, 255, 20)
+NEON_ORANGE = (255, 140, 0)
+NEON_PURPLE = (170, 0, 255)
+NEON_YELLOW = (255, 240, 0)
+NEON_RED = (255, 40, 40)
 TEXT_COLOR = (236, 236, 236)
 FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "Monocraft.ttc"
 LOBBY_TITLE_FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "Geet-Regular.ttf"
@@ -37,16 +42,38 @@ LOBBY_PADDING_X = 36
 LOBBY_TITLE_Y = 54
 LOBBY_LIST_Y = 154
 LOBBY_BUTTON_Y = 420
-LOBBY_BUTTON_WIDTH = 180
+LOBBY_BUTTON_WIDTH = 140
 LOBBY_BUTTON_HEIGHT = 46
 LOBBY_BUTTON_GAP = 18
 INVITE_NOTICE_DURATION_MS = 1500
 INVITE_NOTICE_FLICKER_INTERVAL_MS = 250
+SETTINGS_PREVIEW_CELL_SIZE = 28
+SETTINGS_PREVIEW_COLS = 10
+SETTINGS_PREVIEW_ROWS = 8
+SETTINGS_LEFT_X = 40
+SETTINGS_TOP_Y = 120
+SETTINGS_PREVIEW_X = 560
+SETTINGS_PREVIEW_Y = 150
+SETTINGS_FIELDS = ["SNAKE_COLOR", "UP", "LEFT", "DOWN", "RIGHT", "BACK"]
 
 
 def challengeable_users(state: ClientAppState) -> list[str]:
     """Return online users that can be challenged from the lobby."""
     return [username for username in state.online_users if username and username != state.username]
+
+
+def snake_color_rgb(color_name: str) -> tuple[int, int, int]:
+    """Map a preset snake color name to its neon RGB value."""
+    palette = {
+        "pink": NEON_PINK,
+        "blue": NEON_BLUE,
+        "green": NEON_GREEN,
+        "orange": NEON_ORANGE,
+        "purple": NEON_PURPLE,
+        "yellow": NEON_YELLOW,
+        "red": NEON_RED,
+    }
+    return palette.get(color_name, NEON_PINK)
 
 
 def lighten_color(color: tuple[int, int, int], amount: int = 55) -> tuple[int, int, int]:
@@ -85,6 +112,38 @@ def default_login_form(
     }
 
 
+def key_name(key_code: int) -> str:
+    """Return a readable label for a configured pygame key code."""
+    key_labels = {
+        1073741906: "UP",
+        1073741905: "DOWN",
+        1073741904: "LEFT",
+        1073741903: "RIGHT",
+    }
+    return key_labels.get(key_code, chr(key_code).upper() if 32 <= key_code < 127 else str(key_code))
+
+
+def move_preview_snake(state: ClientAppState, direction: str) -> None:
+    """Move the settings preview snake one cell without damage."""
+    offsets = {
+        "UP": (0, -1),
+        "DOWN": (0, 1),
+        "LEFT": (-1, 0),
+        "RIGHT": (1, 0),
+    }
+    dx, dy = offsets[direction]
+    head_x, head_y = state.preview_body[0]
+    next_head = ((head_x + dx) % SETTINGS_PREVIEW_COLS, (head_y + dy) % SETTINGS_PREVIEW_ROWS)
+    state.preview_body = [next_head] + state.preview_body[:-1]
+    state.preview_direction = direction
+
+
+def cycle_snake_color(current: str, step: int) -> str:
+    """Return the next configured snake color preset."""
+    index = SNAKE_COLOR_PRESETS.index(current) if current in SNAKE_COLOR_PRESETS else 0
+    return SNAKE_COLOR_PRESETS[(index + step) % len(SNAKE_COLOR_PRESETS)]
+
+
 def run_pygame_client(
     host: str | None = None,
     port: int | None = None,
@@ -108,6 +167,7 @@ def run_pygame_client(
     user_label_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 16)
     player_name_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 20)
     lobby_player_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 22)
+    settings_label_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 24)
 
     client = ArenaClient()
     state = ClientAppState()
@@ -178,6 +238,7 @@ def run_pygame_client(
         if state.phase == "lobby":
             form["username"] = typed_username
             form["chat_port"] = "" if typed_chat_port is None else str(typed_chat_port)
+            client.send(message_types.SETTINGS_UPDATE, {"snake_color": state.snake_color_name})
             if receiver_thread is None or not receiver_thread.is_alive():
                 receiver_thread = threading.Thread(target=receiver, daemon=True)
                 receiver_thread.start()
@@ -225,6 +286,7 @@ def run_pygame_client(
                 user_label_font,
                 player_name_font,
                 lobby_player_font,
+                settings_label_font,
                 state,
                 form,
                 login_stage,
@@ -272,17 +334,48 @@ def _handle_keydown(
             form[field_name] += event.unicode
         return active_field_index
 
+    if state.phase == "settings":
+        if state.rebinding_direction is not None:
+            if key == pygame.K_ESCAPE:
+                state.rebinding_direction = None
+                return active_field_index
+            state.movement_keys[state.rebinding_direction] = key
+            state.rebinding_direction = None
+            return active_field_index
+
+        for direction, configured_key in state.movement_keys.items():
+            if key == configured_key:
+                move_preview_snake(state, direction)
+                return active_field_index
+
+        if key == pygame.K_ESCAPE:
+            return_to_lobby(state)
+            return active_field_index
+        if key == pygame.K_UP:
+            state.settings_field_index = (state.settings_field_index - 1) % len(SETTINGS_FIELDS)
+            return active_field_index
+        if key == pygame.K_DOWN:
+            state.settings_field_index = (state.settings_field_index + 1) % len(SETTINGS_FIELDS)
+            return active_field_index
+        if SETTINGS_FIELDS[state.settings_field_index] == "SNAKE_COLOR" and key in (pygame.K_LEFT, pygame.K_RIGHT):
+            step = -1 if key == pygame.K_LEFT else 1
+            state.snake_color_name = cycle_snake_color(state.snake_color_name, step)
+            client.send(message_types.SETTINGS_UPDATE, {"snake_color": state.snake_color_name})
+            return active_field_index
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            field = SETTINGS_FIELDS[state.settings_field_index]
+            if field == "BACK":
+                return_to_lobby(state)
+            elif field in {"UP", "LEFT", "DOWN", "RIGHT"}:
+                state.rebinding_direction = field
+            return active_field_index
+        return active_field_index
+
     if state.phase == "match":
-        key_map = {
-            pygame.K_UP: "UP",
-            pygame.K_DOWN: "DOWN",
-            pygame.K_LEFT: "LEFT",
-            pygame.K_RIGHT: "RIGHT",
-        }
-        direction = key_map.get(key)
-        if direction is not None:
-            client.send(message_types.INPUT, {"direction": direction})
-            return
+        for direction, configured_key in state.movement_keys.items():
+            if key == configured_key:
+                client.send(message_types.INPUT, {"direction": direction})
+                return active_field_index
 
     if key == pygame.K_w and state.phase == "lobby":
         client.send(message_types.WAITING, {})
@@ -292,13 +385,15 @@ def _handle_keydown(
         client.send(message_types.WATCH_MATCH, {})
     elif key == pygame.K_c and state.phase in {"lobby", "match"}:
         client.send(message_types.CHEER, {"text": "Let's go!"})
+    elif key == pygame.K_t and state.phase == "lobby":
+        state.phase = "settings"
     elif key == pygame.K_l and state.phase == "game_over":
         return_to_lobby(state)
     elif key in (pygame.K_UP, pygame.K_DOWN) and state.phase == "lobby":
         users = challengeable_users(state)
         if not users:
             state.selected_lobby_index = 0
-            return
+            return active_field_index
         step = -1 if key == pygame.K_UP else 1
         state.selected_lobby_index = (state.selected_lobby_index + step) % len(users)
     elif key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state.phase == "lobby":
@@ -320,6 +415,7 @@ def _draw_ui(
     user_label_font: Any,
     player_name_font: Any,
     lobby_player_font: Any,
+    settings_label_font: Any,
     state: ClientAppState,
     form: dict[str, str],
     login_stage: str,
@@ -332,9 +428,11 @@ def _draw_ui(
         _draw_text(screen, small_font, f"Error: {state.last_error}", 20, 50, color=(255, 120, 120))
 
     if state.phase == "login":
-        _draw_login(screen, pygame, font, small_font, lobby_title_font, form, login_stage, active_field_index)
+        _draw_login(screen, pygame, small_font, lobby_title_font, form, login_stage, active_field_index)
     elif state.phase == "lobby":
         _draw_lobby(screen, pygame, font, small_font, lobby_title_font, lobby_button_font, lobby_player_font, state, lobby_notice)
+    elif state.phase == "settings":
+        _draw_settings(screen, pygame, font, small_font, lobby_title_font, settings_label_font, lobby_button_font, state)
     elif state.phase == "match":
         _draw_match(screen, pygame, font, small_font, player_name_font, state)
     elif state.phase == "game_over":
@@ -346,17 +444,12 @@ def _draw_ui(
 
 def _draw_panels(pygame: Any, screen: Any) -> None:
     pygame.draw.rect(screen, PANEL_COLOR, pygame.Rect(0, 0, WINDOW_WIDTH - RIGHT_PANEL_WIDTH, TOP_PANEL_HEIGHT))
-    pygame.draw.rect(
-        screen,
-        PANEL_COLOR,
-        pygame.Rect(WINDOW_WIDTH - RIGHT_PANEL_WIDTH, 0, RIGHT_PANEL_WIDTH, WINDOW_HEIGHT),
-    )
+    pygame.draw.rect(screen, PANEL_COLOR, pygame.Rect(WINDOW_WIDTH - RIGHT_PANEL_WIDTH, 0, RIGHT_PANEL_WIDTH, WINDOW_HEIGHT))
 
 
 def _draw_login(
     screen: Any,
     pygame: Any,
-    font: Any,
     small_font: Any,
     title_font: Any,
     form: dict[str, str],
@@ -367,17 +460,12 @@ def _draw_login(
         title = "Connect To Server"
         hint = "Tab or Up/Down changes field. Enter continues."
         form_fields = ["host", "port"]
-        labels = {
-            "host": "Host",
-            "port": "Port",
-        }
+        labels = {"host": "Host", "port": "Port"}
     else:
         title = "Choose Username"
         hint = "Type your username and press Enter. Esc goes back."
         form_fields = ["username"]
-        labels = {
-            "username": "Username",
-        }
+        labels = {"username": "Username"}
 
     _draw_text(screen, title_font, title, 20, 90)
     _draw_text(screen, small_font, hint, 20, 120)
@@ -385,7 +473,7 @@ def _draw_login(
     for index, field_name in enumerate(form_fields):
         is_active = index == active_field_index
         box = pygame.Rect(260, y - 6, 280, 34)
-        border = NEON_PINK if is_active else (120, 126, 148)
+        border = NEON_PINK if is_active else BOARD_BORDER
         fill = (34, 38, 50) if is_active else (28, 32, 42)
         _draw_text(screen, small_font, labels[field_name], 40, y)
         pygame.draw.rect(screen, fill, box)
@@ -434,14 +522,7 @@ def _draw_lobby(
     if isinstance(notice_message, str):
         elapsed_ms = int(pygame.time.get_ticks() - int(lobby_notice.get("started_ms", 0)))
         if elapsed_ms < INVITE_NOTICE_DURATION_MS:
-            _draw_text(
-                screen,
-                small_font,
-                notice_message,
-                LOBBY_PADDING_X + 150,
-                selected_y,
-                color=invite_notice_color(elapsed_ms),
-            )
+            _draw_text(screen, small_font, notice_message, LOBBY_PADDING_X + 150, selected_y, color=invite_notice_color(elapsed_ms))
         else:
             lobby_notice["message"] = None
 
@@ -455,27 +536,59 @@ def _draw_lobby(
         ("INVITE", _invite_enabled(state)),
         ("ACCEPT", state.challenger_username is not None),
         ("WATCH", True),
+        ("SETTINGS", True),
     ]
     button_x = LOBBY_PADDING_X
     for label, enabled in buttons:
-        _draw_lobby_button(
-            screen,
-            pygame,
-            lobby_button_font,
-            label,
-            button_x,
-            button_y,
-            enabled=enabled,
-        )
+        _draw_lobby_button(screen, pygame, lobby_button_font, label, button_x, button_y, enabled=enabled)
         button_x += LOBBY_BUTTON_WIDTH + LOBBY_BUTTON_GAP
 
-    _draw_text(
-        screen,
-        small_font,
-        "Up/Down selects player. Enter invites. A accepts invites. S watches.",
-        LOBBY_PADDING_X,
-        button_y + LOBBY_BUTTON_HEIGHT + 28,
-    )
+    _draw_text(screen, small_font, "Up/Down selects player. Enter invites. A accepts invites. S watches. T settings.", LOBBY_PADDING_X, button_y + LOBBY_BUTTON_HEIGHT + 28)
+
+
+def _draw_settings(
+    screen: Any,
+    pygame: Any,
+    font: Any,
+    small_font: Any,
+    title_font: Any,
+    label_font: Any,
+    button_font: Any,
+    state: ClientAppState,
+) -> None:
+    _draw_text(screen, title_font, "GAME SETTINGS", SETTINGS_LEFT_X, 54)
+    _draw_text(screen, small_font, "Esc or Back returns to lobby.", SETTINGS_LEFT_X, 92)
+    color_selected = state.settings_field_index == 0
+    _draw_text(screen, label_font, f"Snake Color: {state.snake_color_name.upper()}", SETTINGS_LEFT_X, SETTINGS_TOP_Y, color=NEON_PINK if color_selected else TEXT_COLOR)
+    _draw_arrow_button(screen, pygame, button_font, "<", SETTINGS_LEFT_X, SETTINGS_TOP_Y + 42, color_selected)
+    _draw_arrow_button(screen, pygame, button_font, ">", SETTINGS_LEFT_X + 250, SETTINGS_TOP_Y + 42, color_selected)
+
+    y = SETTINGS_TOP_Y + 120
+    for index, direction in enumerate(["UP", "LEFT", "DOWN", "RIGHT"], start=1):
+        selected = state.settings_field_index == index
+        rebinding = state.rebinding_direction == direction
+        _draw_setting_row(
+            screen,
+            pygame,
+            label_font,
+            small_font,
+            direction,
+            "PRESS KEY..." if rebinding else key_name(state.movement_keys[direction]),
+            SETTINGS_LEFT_X,
+            y,
+            selected,
+            rebinding,
+        )
+        y += 70
+
+    back_selected = state.settings_field_index == len(SETTINGS_FIELDS) - 1
+    _draw_lobby_button(screen, pygame, button_font, "BACK", SETTINGS_LEFT_X, y + 10, enabled=True)
+    if back_selected:
+        pygame.draw.rect(screen, NEON_BLUE, pygame.Rect(SETTINGS_LEFT_X - 4, y + 6, LOBBY_BUTTON_WIDTH + 8, LOBBY_BUTTON_HEIGHT + 8), 2)
+
+    _draw_text(screen, label_font, "PREVIEW", SETTINGS_PREVIEW_X, SETTINGS_PREVIEW_Y - 42)
+    _draw_preview_box(screen, pygame, state)
+    _draw_text(screen, small_font, "Use your configured movement keys in the preview.", SETTINGS_PREVIEW_X, SETTINGS_PREVIEW_Y + SETTINGS_PREVIEW_ROWS * SETTINGS_PREVIEW_CELL_SIZE + 16)
 
 
 def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_name_font: Any, state: ClientAppState) -> None:
@@ -488,23 +601,18 @@ def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_nam
     timer_x = BOARD_OFFSET_X + board_width_px // 2 - 110
     _draw_text(screen, small_font, f"Time Left: {remaining_seconds(match)}s", timer_x, 46)
 
-    board_rect = pygame.Rect(
-        BOARD_OFFSET_X,
-        BOARD_OFFSET_Y,
-        board_width_px,
-        int(board["height"]) * CELL_SIZE,
-    )
+    board_rect = pygame.Rect(BOARD_OFFSET_X, BOARD_OFFSET_Y, board_width_px, int(board["height"]) * CELL_SIZE)
     pygame.draw.rect(screen, BOARD_COLOR, board_rect)
     pygame.draw.rect(screen, BOARD_BORDER, board_rect, 2)
 
     for obstacle in obstacles:
         _draw_cell(pygame, screen, obstacle[0], obstacle[1], (110, 110, 110))
     for pie in pies:
-        color = NEON_GREEN
-        _draw_cell(pygame, screen, pie["x"], pie["y"], color)
+        _draw_cell(pygame, screen, pie["x"], pie["y"], NEON_GREEN)
 
-    snake_colors = [NEON_BLUE, NEON_PINK]
-    for color, (username, snake) in zip(snake_colors, snakes.items()):
+    for username, snake in snakes.items():
+        fallback = "blue" if username != state.username else state.snake_color_name
+        color = snake_color_rgb(str(snake.get("color") or fallback))
         if not should_render_snake(snake):
             continue
         body = snake.get("body", [])
@@ -516,20 +624,10 @@ def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_nam
     players = list(snakes.items())
     if players:
         left_username, left_snake = players[0]
-        _draw_player_status(screen, pygame, player_name_font, small_font, left_username, left_snake, BOARD_OFFSET_X, 22, NEON_BLUE)
+        _draw_player_status(screen, pygame, player_name_font, small_font, left_username, left_snake, BOARD_OFFSET_X, 22, snake_color_rgb(str(left_snake.get("color") or "blue")))
     if len(players) > 1:
         right_username, right_snake = players[1]
-        _draw_player_status(
-            screen,
-            pygame,
-            player_name_font,
-            small_font,
-            right_username,
-            right_snake,
-            BOARD_OFFSET_X + board_rect.width - 180,
-            22,
-            NEON_PINK,
-        )
+        _draw_player_status(screen, pygame, player_name_font, small_font, right_username, right_snake, BOARD_OFFSET_X + board_rect.width - 180, 22, snake_color_rgb(str(right_snake.get("color") or "pink")))
 
     cheers = match.get("cheers", [])
     _draw_text(screen, font, "Cheers", WINDOW_WIDTH - RIGHT_PANEL_WIDTH + 20, 20)
@@ -541,7 +639,7 @@ def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_nam
     else:
         _draw_text(screen, small_font, "No cheers yet.", WINDOW_WIDTH - RIGHT_PANEL_WIDTH + 20, 60)
 
-    _draw_text(screen, small_font, "Arrow keys move. C cheers.", 20, WINDOW_HEIGHT - 40)
+    _draw_text(screen, small_font, "Configured movement keys control the snake. C cheers.", 20, WINDOW_HEIGHT - 40)
 
 
 def _draw_game_over(screen: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
@@ -587,15 +685,66 @@ def _draw_lobby_button(
     pygame.draw.rect(screen, border_color, rect, 2)
     text_color = TEXT_COLOR if enabled else (150, 150, 150)
     text_surface = font.render(label, True, text_color)
-    text_rect = text_surface.get_rect(center=rect.center)
-    screen.blit(text_surface, text_rect)
+    screen.blit(text_surface, text_surface.get_rect(center=rect.center))
+
+
+def _draw_arrow_button(screen: Any, pygame: Any, font: Any, label: str, x: int, y: int, selected: bool) -> None:
+    rect = pygame.Rect(x, y, 56, 44)
+    pygame.draw.rect(screen, (40, 8, 28), rect)
+    pygame.draw.rect(screen, NEON_PINK if selected else BOARD_BORDER, rect, 2)
+    text_surface = font.render(label, True, TEXT_COLOR)
+    screen.blit(text_surface, text_surface.get_rect(center=rect.center))
+
+
+def _draw_setting_row(
+    screen: Any,
+    pygame: Any,
+    label_font: Any,
+    value_font: Any,
+    direction: str,
+    value_label: str,
+    x: int,
+    y: int,
+    selected: bool,
+    rebinding: bool,
+) -> None:
+    _draw_text(screen, label_font, direction, x, y, color=NEON_PINK if selected else TEXT_COLOR)
+    box = pygame.Rect(x, y + 28, 230, 38)
+    pygame.draw.rect(screen, (26, 26, 26), box)
+    pygame.draw.rect(screen, NEON_BLUE if rebinding else (NEON_PINK if selected else BOARD_BORDER), box, 2)
+    _draw_text(screen, value_font, value_label, x + 12, y + 36)
+
+
+def _draw_preview_box(screen: Any, pygame: Any, state: ClientAppState) -> None:
+    preview_rect = pygame.Rect(
+        SETTINGS_PREVIEW_X,
+        SETTINGS_PREVIEW_Y,
+        SETTINGS_PREVIEW_COLS * SETTINGS_PREVIEW_CELL_SIZE,
+        SETTINGS_PREVIEW_ROWS * SETTINGS_PREVIEW_CELL_SIZE,
+    )
+    pygame.draw.rect(screen, BOARD_COLOR, preview_rect)
+    pygame.draw.rect(screen, BOARD_BORDER, preview_rect, 2)
+    snake_color = snake_color_rgb(state.snake_color_name)
+    for segment in state.preview_body[1:]:
+        _draw_preview_cell(pygame, screen, segment[0], segment[1], snake_color)
+    head = state.preview_body[0]
+    _draw_preview_cell(pygame, screen, head[0], head[1], lighten_color(snake_color))
+
+
+def _draw_preview_cell(pygame: Any, screen: Any, x: int, y: int, color: tuple[int, int, int]) -> None:
+    rect = pygame.Rect(
+        SETTINGS_PREVIEW_X + x * SETTINGS_PREVIEW_CELL_SIZE,
+        SETTINGS_PREVIEW_Y + y * SETTINGS_PREVIEW_CELL_SIZE,
+        SETTINGS_PREVIEW_CELL_SIZE,
+        SETTINGS_PREVIEW_CELL_SIZE,
+    )
+    pygame.draw.rect(screen, color, rect)
 
 
 def _draw_user_label(screen: Any, font: Any, state: ClientAppState) -> None:
     username = state.username or "Not logged in"
     label_surface = font.render(f"USER {username}", True, NEON_PINK)
-    total_width = label_surface.get_width()
-    x = WINDOW_WIDTH - 18 - total_width
+    x = WINDOW_WIDTH - 18 - label_surface.get_width()
     y = WINDOW_HEIGHT - 14 - label_surface.get_height()
     screen.blit(label_surface, (x, y))
 
@@ -609,38 +758,71 @@ def _invite_enabled(state: ClientAppState) -> bool:
 
 
 def _lobby_button_rect(label: str) -> tuple[int, int, int, int]:
-    labels = ["INVITE", "ACCEPT", "WATCH"]
+    labels = ["INVITE", "ACCEPT", "WATCH", "SETTINGS"]
     index = labels.index(label)
     x = LOBBY_PADDING_X + index * (LOBBY_BUTTON_WIDTH + LOBBY_BUTTON_GAP)
     return (x, LOBBY_BUTTON_Y, LOBBY_BUTTON_WIDTH, LOBBY_BUTTON_HEIGHT)
 
 
 def _handle_mouse_click(client: ArenaClient, state: ClientAppState, position: tuple[int, int]) -> None:
-    if state.phase != "lobby":
+    if state.phase == "lobby":
+        x, y = position
+        button_states = {
+            "INVITE": _invite_enabled(state),
+            "ACCEPT": state.challenger_username is not None,
+            "WATCH": True,
+            "SETTINGS": True,
+        }
+        for label, enabled in button_states.items():
+            if not enabled:
+                continue
+            rect_x, rect_y, rect_w, rect_h = _lobby_button_rect(label)
+            if rect_x <= x <= rect_x + rect_w and rect_y <= y <= rect_y + rect_h:
+                if label == "INVITE":
+                    users = challengeable_users(state)
+                    if not users:
+                        return
+                    selected = users[state.selected_lobby_index % len(users)]
+                    client.send(message_types.CHALLENGE_PLAYER, {"target_username": selected})
+                elif label == "ACCEPT" and state.challenger_username:
+                    client.send(message_types.CHALLENGE_ACCEPT, {"challenger_username": state.challenger_username})
+                elif label == "WATCH":
+                    client.send(message_types.WATCH_MATCH, {})
+                elif label == "SETTINGS":
+                    state.phase = "settings"
+                return
         return
 
+    if state.phase == "settings":
+        _handle_settings_click(client, state, position)
+
+
+def _handle_settings_click(client: ArenaClient, state: ClientAppState, position: tuple[int, int]) -> None:
     x, y = position
-    button_states = {
-        "INVITE": _invite_enabled(state),
-        "ACCEPT": state.challenger_username is not None,
-        "WATCH": True,
-    }
-    for label, enabled in button_states.items():
-        if not enabled:
-            continue
-        rect_x, rect_y, rect_w, rect_h = _lobby_button_rect(label)
-        if rect_x <= x <= rect_x + rect_w and rect_y <= y <= rect_y + rect_h:
-            if label == "INVITE":
-                users = challengeable_users(state)
-                if not users:
-                    return
-                selected = users[state.selected_lobby_index % len(users)]
-                client.send(message_types.CHALLENGE_PLAYER, {"target_username": selected})
-            elif label == "ACCEPT" and state.challenger_username:
-                client.send(message_types.CHALLENGE_ACCEPT, {"challenger_username": state.challenger_username})
-            elif label == "WATCH":
-                client.send(message_types.WATCH_MATCH, {})
+    if SETTINGS_LEFT_X <= x <= SETTINGS_LEFT_X + 56 and SETTINGS_TOP_Y + 42 <= y <= SETTINGS_TOP_Y + 86:
+        state.snake_color_name = cycle_snake_color(state.snake_color_name, -1)
+        client.send(message_types.SETTINGS_UPDATE, {"snake_color": state.snake_color_name})
+        state.settings_field_index = 0
+        return
+    if SETTINGS_LEFT_X + 250 <= x <= SETTINGS_LEFT_X + 306 and SETTINGS_TOP_Y + 42 <= y <= SETTINGS_TOP_Y + 86:
+        state.snake_color_name = cycle_snake_color(state.snake_color_name, 1)
+        client.send(message_types.SETTINGS_UPDATE, {"snake_color": state.snake_color_name})
+        state.settings_field_index = 0
+        return
+
+    row_y = SETTINGS_TOP_Y + 120
+    for index, direction in enumerate(["UP", "LEFT", "DOWN", "RIGHT"], start=1):
+        rect = pygame.Rect(SETTINGS_LEFT_X, row_y + 28, 230, 38)
+        if rect.collidepoint(x, y):
+            state.settings_field_index = index
+            state.rebinding_direction = direction
             return
+        row_y += 70
+
+    back_rect = pygame.Rect(SETTINGS_LEFT_X, row_y + 10, LOBBY_BUTTON_WIDTH, LOBBY_BUTTON_HEIGHT)
+    if back_rect.collidepoint(x, y):
+        state.settings_field_index = len(SETTINGS_FIELDS) - 1
+        return_to_lobby(state)
 
 
 def _draw_health_bar(
@@ -660,15 +842,10 @@ def _draw_health_bar(
 
 
 def _draw_cell(pygame: Any, screen: Any, x: int, y: int, color: tuple[int, int, int]) -> None:
-    rect = pygame.Rect(
-        BOARD_OFFSET_X + x * CELL_SIZE,
-        BOARD_OFFSET_Y + y * CELL_SIZE,
-        CELL_SIZE,
-        CELL_SIZE,
-    )
+    rect = pygame.Rect(BOARD_OFFSET_X + x * CELL_SIZE, BOARD_OFFSET_Y + y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
     pygame.draw.rect(screen, color, rect)
 
 
-def _draw_text(screen: Any, font: Any, text: str, x: int, y: int, color: tuple[int, int, int] = (230, 234, 244)) -> None:
+def _draw_text(screen: Any, font: Any, text: str, x: int, y: int, color: tuple[int, int, int] = TEXT_COLOR) -> None:
     surface = font.render(text, True, color)
     screen.blit(surface, (x, y))

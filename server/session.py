@@ -14,3 +14,4 @@ class UserSession:
     socket: socket.socket
     username: str | None = None
     chat_port: int | None = None
+    snake_color: str | None = None
