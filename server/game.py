@@ -89,9 +89,29 @@ class Match:
         }
 
     def _default_obstacles(self) -> list[tuple[int, int]]:
-        center_x = self.board_width // 2
-        center_y = self.board_height // 2
-        return [(center_x, center_y - 2), (center_x, center_y), (center_x, center_y + 2)]
+        safe_cells = self._spawn_safe_cells()
+        candidates = [
+            (x, y)
+            for y in range(1, self.board_height - 1)
+            for x in range(1, self.board_width - 1)
+            if (x, y) not in safe_cells
+        ]
+        obstacle_count = min(4, len(candidates))
+        if obstacle_count == 0:
+            return []
+        return random.sample(candidates, k=obstacle_count)
+
+    def _spawn_safe_cells(self) -> set[tuple[int, int]]:
+        safe_cells: set[tuple[int, int]] = set()
+        for snake in self.snakes.values():
+            for segment_x, segment_y in snake.body:
+                for dy in range(-3, 4):
+                    for dx in range(-3, 4):
+                        x = segment_x + dx
+                        y = segment_y + dy
+                        if 0 <= x < self.board_width and 0 <= y < self.board_height:
+                            safe_cells.add((x, y))
+        return safe_cells
 
     def queue_input(self, username: str, direction: str) -> bool:
         """Store the latest direction input for a player."""
@@ -230,7 +250,7 @@ class Match:
             if (int(pie["x"]), int(pie["y"])) != head:
                 continue
             pie_type = str(pie["kind"])
-            snake.health += PIE_HEALTH.get(pie_type, 0)
+            snake.health = min(INITIAL_HEALTH, snake.health + PIE_HEALTH.get(pie_type, 0))
             self.pies.pop(index)
             return
 

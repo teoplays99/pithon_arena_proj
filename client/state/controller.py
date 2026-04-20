@@ -66,6 +66,9 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         state.phase = "match"
         state.match_state = dict(payload.get("state", {}))
         state.spectator = bool(payload.get("spectator", False))
+        state.countdown_seconds = int(payload.get("countdown_seconds", 0) or 0)
+        state.countdown_end_ms = None
+        state.cheer_ripples.clear()
         state.game_over = None
         state.challenger_username = None
         state.outgoing_challenge_target = None
@@ -78,6 +81,7 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
 
     if message_type == message_types.GAME_OVER:
         state.game_over = dict(payload)
+        state.cheer_ripples.clear()
         state.phase = "game_over"
         return state
 

@@ -24,6 +24,9 @@ class ClientAppState:
     disconnected_player: str | None = None
     selected_lobby_index: int = 0
     snake_color_name: str = "pink"
+    countdown_end_ms: int | None = None
+    countdown_seconds: int = 0
+    cheer_ripples: list[dict[str, Any]] = field(default_factory=list)
     movement_keys: dict[str, int] = field(
         default_factory=lambda: {
             "UP": 1073741906,

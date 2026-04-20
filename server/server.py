@@ -19,6 +19,8 @@ from server.user_registry import UserRegistry
 class PythonArenaServer:
     """Minimal server bootstrap for login and lobby presence."""
 
+    MATCH_START_COUNTDOWN_SECONDS = 3
+
     def __init__(self, host: str, port: int, db_path: str = "python_arena.db") -> None:
         self.host = host
         self.port = port
@@ -342,7 +344,12 @@ class PythonArenaServer:
                 session,
                 make_message(
                     message_types.MATCH_START,
-                    {"players": state["players"], "state": state, "spectator": True},
+                    {
+                        "players": state["players"],
+                        "state": state,
+                        "spectator": True,
+                        "countdown_seconds": 0,
+                    },
                 ),
             )
 
@@ -405,7 +412,12 @@ class PythonArenaServer:
                 target_session,
                 make_message(
                     message_types.MATCH_START,
-                    {"players": players, "state": initial_state, "spectator": False},
+                    {
+                        "players": players,
+                        "state": initial_state,
+                        "spectator": False,
+                        "countdown_seconds": self.MATCH_START_COUNTDOWN_SECONDS,
+                    },
                 ),
             )
         self._send_chat_peer_info(players)
@@ -449,6 +461,7 @@ class PythonArenaServer:
     def run_match_loop(self, owned_match: Match) -> None:
         """Run the authoritative state update loop for the active match."""
         tick_interval = 1 / SERVER_TICK_RATE
+        time.sleep(self.MATCH_START_COUNTDOWN_SECONDS)
         while self._running.is_set():
             with self._match_lock:
                 match = self.active_match
