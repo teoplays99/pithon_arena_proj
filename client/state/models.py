@@ -26,7 +26,7 @@ class ClientAppState:
     snake_color_name: str = "pink"
     countdown_end_ms: int | None = None
     countdown_seconds: int = 0
-    cheer_ripples: list[dict[str, Any]] = field(default_factory=list)
+    last_cheer_sent_ms: int | None = None
     movement_keys: dict[str, int] = field(
         default_factory=lambda: {
             "UP": 1073741906,

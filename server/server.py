@@ -21,7 +21,7 @@ class PythonArenaServer:
 
     MATCH_START_COUNTDOWN_SECONDS = 3
 
-    def __init__(self, host: str, port: int, db_path: str = "python_arena.db") -> None:
+    def __init__(self, host: str, port: int, db_path: str = "instance/python_arena_runtime.db") -> None:
         self.host = host
         self.port = port
         self.user_registry = UserRegistry()
@@ -367,6 +367,7 @@ class PythonArenaServer:
         if session.username is None:
             return
         text = str(payload.get("text", "")).strip()
+        target_username = str(payload.get("target_username", "")).strip() or None
         if not text:
             self._safe_send(session, make_message(message_types.ERROR, {"message": "Cheer text is required."}))
             return
@@ -376,7 +377,7 @@ class PythonArenaServer:
             if match is None:
                 self._safe_send(session, make_message(message_types.ERROR, {"message": "No active match to cheer for."}))
                 return
-            match.add_cheer(session.username, text)
+            match.add_cheer(session.username, text, target_username=target_username)
             state = match.to_state_payload()
 
         for username in self.get_match_recipients(match):

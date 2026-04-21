@@ -16,6 +16,7 @@ def return_to_lobby(state: ClientAppState) -> ClientAppState:
     state.spectator = False
     state.disconnected_player = None
     state.last_error = None
+    state.last_cheer_sent_ms = None
     return state
 
 
@@ -68,7 +69,7 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         state.spectator = bool(payload.get("spectator", False))
         state.countdown_seconds = int(payload.get("countdown_seconds", 0) or 0)
         state.countdown_end_ms = None
-        state.cheer_ripples.clear()
+        state.last_cheer_sent_ms = None
         state.game_over = None
         state.challenger_username = None
         state.outgoing_challenge_target = None
@@ -81,7 +82,6 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
 
     if message_type == message_types.GAME_OVER:
         state.game_over = dict(payload)
-        state.cheer_ripples.clear()
         state.phase = "game_over"
         return state
 

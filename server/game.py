@@ -35,6 +35,8 @@ PIE_HEALTH = {
     "green": 10,
     "gold": 20,
 }
+CHEER_RIPPLE_SPEED = 2
+CHEER_HISTORY_LIMIT = 30
 
 
 @dataclass
@@ -61,6 +63,7 @@ class Match:
     pies: list[dict[str, int | str]] = field(default_factory=list)
     cheers: list[dict[str, str]] = field(default_factory=list)
     snake_colors: dict[str, str] = field(default_factory=dict)
+    cheer_waves: list[dict[str, object]] = field(default_factory=list)
     winner: str | None = None
     reason: str | None = None
     game_over: bool = False
@@ -70,6 +73,7 @@ class Match:
             raise ValueError("A match requires exactly two players.")
         self.snakes = self._build_initial_snakes(self.players)
         self.pending_inputs: dict[str, str] = {}
+        self.tick_count = 0
         if not self.obstacles:
             self.obstacles = self._default_obstacles()
         if not self.pies:
@@ -126,6 +130,7 @@ class Match:
         if self.game_over:
             return self.to_state_payload()
 
+        self.tick_count += 1
         self._advance_collision_freeze()
 
         for username, snake in self.snakes.items():
@@ -216,11 +221,20 @@ class Match:
         self.winner = remaining_players[0] if remaining_players else None
         return self.to_state_payload()
 
-    def add_cheer(self, username: str, text: str, limit: int = 30) -> None:
+    def add_cheer(self, username: str, text: str, target_username: str | None = None) -> None:
         """Append a cheer message and trim the history."""
         self.cheers.append({"from": username, "text": text})
-        if len(self.cheers) > limit:
-            self.cheers = self.cheers[-limit:]
+        if len(self.cheers) > CHEER_HISTORY_LIMIT:
+            self.cheers = self.cheers[-CHEER_HISTORY_LIMIT:]
+        if target_username and target_username in self.snakes:
+            head_x, head_y = self.snakes[target_username].body[0]
+            self.cheer_waves.append(
+                {
+                    "origin": (head_x, head_y),
+                    "color": self.snake_colors.get(target_username, "pink"),
+                    "started_tick": self.tick_count,
+                }
+            )
 
     def _advance_collision_freeze(self) -> None:
         for snake in self.snakes.values():
@@ -288,6 +302,32 @@ class Match:
             return None
         return sorted_snakes[0].username
 
+    def _active_cheer_ripples(self) -> list[dict[str, object]]:
+        obstacle_cells = set(self.obstacles)
+        active: list[dict[str, object]] = []
+        kept: list[dict[str, object]] = []
+        max_board_radius = self.board_width + self.board_height
+        for wave in self.cheer_waves:
+            origin_x, origin_y = wave["origin"]
+            radius = (self.tick_count - int(wave["started_tick"])) * CHEER_RIPPLE_SPEED
+            if radius < 0:
+                continue
+            if radius > max_board_radius:
+                continue
+            cells: list[list[int]] = []
+            for y in range(self.board_height):
+                for x in range(self.board_width):
+                    if (x, y) in obstacle_cells:
+                        continue
+                    if abs(x - origin_x) + abs(y - origin_y) == radius:
+                        cells.append([x, y])
+            if cells:
+                active.append({"cells": cells, "color": wave["color"]})
+            if radius <= max_board_radius:
+                kept.append(wave)
+        self.cheer_waves = kept
+        return active
+
     def to_state_payload(self) -> dict[str, object]:
         """Serialize current match state for the client."""
         return {
@@ -310,4 +350,5 @@ class Match:
             "winner": self.winner,
             "reason": self.reason,
             "cheers": list(self.cheers),
+            "cheer_ripples": self._active_cheer_ripples(),
         }

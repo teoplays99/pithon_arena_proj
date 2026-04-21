@@ -9,8 +9,10 @@ from pathlib import Path
 class MatchHistoryStore:
     """Persist finished matches for demos and reports."""
 
-    def __init__(self, db_path: str = "python_arena.db") -> None:
+    def __init__(self, db_path: str = "instance/python_arena_runtime.db") -> None:
         self.db_path = Path(db_path)
+        if self.db_path != Path(":memory:"):
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._connection = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._initialize()
 

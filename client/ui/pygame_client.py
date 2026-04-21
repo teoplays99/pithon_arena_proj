@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import queue
 import threading
 from pathlib import Path
@@ -55,6 +54,7 @@ SETTINGS_TOP_Y = 120
 SETTINGS_PREVIEW_X = 560
 SETTINGS_PREVIEW_Y = 150
 SETTINGS_FIELDS = ["SNAKE_COLOR", "UP", "LEFT", "DOWN", "RIGHT", "BACK"]
+CHEER_COOLDOWN_MS = 1000
 
 
 def challengeable_users(state: ClientAppState) -> list[str]:
@@ -145,33 +145,23 @@ def move_preview_snake(state: ClientAppState, direction: str) -> None:
     state.preview_direction = direction
 
 
-def trigger_cheer_ripple(state: ClientAppState, player_index: int, started_ms: int) -> bool:
-    """Add one local ripple effect for the selected match player."""
-    match = state.match_state or {}
-    snakes = list((match.get("snakes") or {}).items())
-    if player_index < 0 or player_index >= len(snakes):
-        return False
-    username, snake = snakes[player_index]
-    body = snake.get("body", [])
-    if not body:
-        return False
-    head_x, head_y = body[0]
-    color_name = str(snake.get("color") or ("blue" if player_index == 0 else "pink"))
-    state.cheer_ripples.append(
-        {
-            "username": username,
-            "head": (int(head_x), int(head_y)),
-            "color": snake_color_rgb(color_name),
-            "started_ms": started_ms,
-        }
-    )
-    return True
-
-
 def cycle_snake_color(current: str, step: int) -> str:
     """Return the next configured snake color preset."""
     index = SNAKE_COLOR_PRESETS.index(current) if current in SNAKE_COLOR_PRESETS else 0
     return SNAKE_COLOR_PRESETS[(index + step) % len(SNAKE_COLOR_PRESETS)]
+
+
+def cheer_allowed(last_sent_ms: int | None, now_ms: int, cooldown_ms: int = CHEER_COOLDOWN_MS) -> bool:
+    """Return whether enough time has passed to send another cheer."""
+    return last_sent_ms is None or (now_ms - last_sent_ms) >= cooldown_ms
+
+
+def cheer_target_username(match_state: dict[str, Any] | None, player_index: int) -> str | None:
+    """Return the username of the left/right displayed player."""
+    snakes = list(((match_state or {}).get("snakes") or {}).keys())
+    if 0 <= player_index < len(snakes):
+        return str(snakes[player_index])
+    return None
 
 
 def run_pygame_client(
@@ -410,16 +400,22 @@ def _handle_keydown(
                 client.send(message_types.INPUT, {"direction": direction})
                 return active_field_index
         if key == pygame.K_1:
-            if trigger_cheer_ripple(state, 0, pygame.time.get_ticks()):
-                players = list((state.match_state or {}).get("snakes", {}).keys())
-                target = players[0] if players else "left"
-                client.send(message_types.CHEER, {"text": f"Cheer for {target}"})
+            now_ms = pygame.time.get_ticks()
+            if not cheer_allowed(state.last_cheer_sent_ms, now_ms):
+                return active_field_index
+            target = cheer_target_username(state.match_state, 0)
+            if target is not None:
+                client.send(message_types.CHEER, {"text": f"Cheer for {target}", "target_username": target})
+                state.last_cheer_sent_ms = now_ms
             return active_field_index
         if key == pygame.K_2:
-            if trigger_cheer_ripple(state, 1, pygame.time.get_ticks()):
-                players = list((state.match_state or {}).get("snakes", {}).keys())
-                target = players[1] if len(players) > 1 else "right"
-                client.send(message_types.CHEER, {"text": f"Cheer for {target}"})
+            now_ms = pygame.time.get_ticks()
+            if not cheer_allowed(state.last_cheer_sent_ms, now_ms):
+                return active_field_index
+            target = cheer_target_username(state.match_state, 1)
+            if target is not None:
+                client.send(message_types.CHEER, {"text": f"Cheer for {target}", "target_username": target})
+                state.last_cheer_sent_ms = now_ms
             return active_field_index
 
     if key == pygame.K_a and state.phase == "lobby" and state.challenger_username:
@@ -668,7 +664,7 @@ def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_nam
         if body:
             _draw_cell(pygame, screen, body[0][0], body[0][1], snake_head_color(color))
 
-    _draw_cheer_ripples(screen, pygame, state, board_rect)
+    _draw_cheer_ripples(screen, pygame, match)
 
     players = list(snakes.items())
     if players:
@@ -734,28 +730,17 @@ def _draw_timer_display(screen: Any, pygame: Any, font: Any, match: dict[str, An
     screen.blit(label, (label_x, bar_y + bar_height + 6))
 
 
-def _draw_cheer_ripples(screen: Any, pygame: Any, state: ClientAppState, board_rect: Any) -> None:
-    if not state.cheer_ripples:
+def _draw_cheer_ripples(screen: Any, pygame: Any, match: dict[str, Any]) -> None:
+    ripples = match.get("cheer_ripples", [])
+    if not ripples:
         return
-    now_ms = pygame.time.get_ticks()
-    kept: list[dict[str, Any]] = []
-    ripple_surface = pygame.Surface((board_rect.width, board_rect.height), pygame.SRCALPHA)
-    for ripple in state.cheer_ripples:
-        head_x, head_y = ripple["head"]
-        center = (head_x * CELL_SIZE + CELL_SIZE // 2, head_y * CELL_SIZE + CELL_SIZE // 2)
-        elapsed_ms = now_ms - int(ripple["started_ms"])
-        radius = (elapsed_ms / 1000.0) * 260.0
-        max_radius = max(
-            math.dist(center, (0, 0)),
-            math.dist(center, (board_rect.width, 0)),
-            math.dist(center, (0, board_rect.height)),
-            math.dist(center, (board_rect.width, board_rect.height)),
-        ) + CELL_SIZE
-        if radius <= max_radius:
-            pygame.draw.circle(ripple_surface, (*ripple["color"], 150), center, int(radius), width=3)
-            kept.append(ripple)
-    state.cheer_ripples = kept
-    screen.blit(ripple_surface, board_rect.topleft)
+    obstacle_cells = {tuple(cell) for cell in match.get("obstacles", [])}
+    for ripple in ripples:
+        color = snake_color_rgb(str(ripple.get("color") or "pink"))
+        for cell_x, cell_y in ripple.get("cells", []):
+            if (cell_x, cell_y) in obstacle_cells:
+                continue
+            _draw_cell(pygame, screen, int(cell_x), int(cell_y), color)
 
 
 def _draw_player_status(
