@@ -475,7 +475,7 @@ def _draw_ui(
     elif state.phase == "match":
         _draw_match(screen, pygame, font, small_font, player_name_font, state)
     elif state.phase == "game_over":
-        _draw_game_over(screen, font, small_font, state)
+        _draw_game_over(screen, lobby_title_font, font, small_font, state)
     else:
         _draw_text(screen, font, "Connecting...", 20, 90)
     _draw_user_label(screen, user_label_font, state)
@@ -688,15 +688,42 @@ def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_nam
     _draw_match_countdown(screen, pygame, font, state)
 
 
-def _draw_game_over(screen: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
+def game_over_result_text(state: ClientAppState) -> str:
+    """Return a personalized game-over headline."""
+    game_over = state.game_over or {}
+    winner = game_over.get("winner")
+    if state.spectator:
+        return f"{winner} won!" if winner else "It ended in a draw!"
+    if winner is None:
+        return "You tied."
+    if winner == state.username:
+        return "You won!"
+    return "You lost."
+
+
+def game_over_reason_text(reason: str | None) -> str:
+    """Return a more human-friendly match-ending reason."""
+    reason_map = {
+        "health_zero": "Somebody ran out of snake juice.",
+        "timer_end": "Time called. The healthier serpent survived.",
+        "player_disconnected": "One snake vanished into the void.",
+    }
+    return reason_map.get(reason or "", "The arena has spoken.")
+
+
+def _draw_game_over(screen: Any, title_font: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
     game_over = state.game_over or {}
     winner = game_over.get("winner")
     reason = game_over.get("state", {}).get("reason") or game_over.get("reason")
-    _draw_text(screen, font, "Game Over", 20, 120, color=NEON_PINK)
-    _draw_text(screen, font, f"Winner: {winner}", 20, 180, color=NEON_PINK)
-    if reason:
-        _draw_text(screen, small_font, f"Reason: {reason}", 20, 230, color=NEON_PINK)
-    _draw_text(screen, small_font, "Press L to return to lobby.", 20, 300, color=TEXT_COLOR)
+    _draw_text(screen, title_font, "GAME OVER", 20, 96, color=NEON_PINK)
+    _draw_text(screen, font, game_over_result_text(state), 20, 180, color=NEON_PINK)
+    if state.spectator and winner is not None:
+        _draw_text(screen, small_font, f"Winner: {winner}", 20, 228, color=TEXT_COLOR)
+        reason_y = 268
+    else:
+        reason_y = 228
+    _draw_text(screen, small_font, game_over_reason_text(reason), 20, reason_y, color=TEXT_COLOR)
+    _draw_text(screen, small_font, "Press L to return to lobby.", 20, reason_y + 60, color=TEXT_COLOR)
 
 
 def _draw_match_countdown(screen: Any, pygame: Any, font: Any, state: ClientAppState) -> None:
