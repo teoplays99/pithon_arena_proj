@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from dataclasses import dataclass, field
 
@@ -37,6 +38,7 @@ PIE_HEALTH = {
 }
 CHEER_RIPPLE_SPEED = 2
 CHEER_HISTORY_LIMIT = 30
+CHEER_RING_THICKNESS = 0.75
 
 
 @dataclass
@@ -306,7 +308,7 @@ class Match:
         obstacle_cells = set(self.obstacles)
         active: list[dict[str, object]] = []
         kept: list[dict[str, object]] = []
-        max_board_radius = self.board_width + self.board_height
+        max_board_radius = math.hypot(self.board_width, self.board_height)
         for wave in self.cheer_waves:
             origin_x, origin_y = wave["origin"]
             radius = (self.tick_count - int(wave["started_tick"])) * CHEER_RIPPLE_SPEED
@@ -319,7 +321,8 @@ class Match:
                 for x in range(self.board_width):
                     if (x, y) in obstacle_cells:
                         continue
-                    if abs(x - origin_x) + abs(y - origin_y) == radius:
+                    distance = math.hypot(x - origin_x, y - origin_y)
+                    if abs(distance - radius) <= CHEER_RING_THICKNESS:
                         cells.append([x, y])
             if cells:
                 active.append({"cells": cells, "color": wave["color"]})
