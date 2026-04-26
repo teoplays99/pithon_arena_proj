@@ -111,6 +111,7 @@ class PythonArenaServer:
 
                 username = str(login_message["payload"].get("username", "")).strip()
                 chat_port_raw = login_message["payload"].get("chat_port")
+                chat_host_raw = str(login_message["payload"].get("chat_host", "")).strip()
                 if not self.user_registry.register(username, session):
                     send_message(
                         client_socket,
@@ -122,6 +123,8 @@ class PythonArenaServer:
                     continue
 
                 session.username = username
+                if chat_host_raw:
+                    session.chat_host = chat_host_raw
                 if isinstance(chat_port_raw, int) and 1 <= chat_port_raw <= 65535:
                     session.chat_port = chat_port_raw
                 send_message(
@@ -396,7 +399,7 @@ class PythonArenaServer:
         success, message, canceled = self.lobby_manager.issue_chat_request(
             session.username,
             target_username,
-            session.address[0],
+            session.chat_host or session.address[0],
             requester_port,
             set(self.user_registry.list_usernames()),
             ttl_seconds=self.CHAT_REQUEST_TTL_SECONDS,
@@ -529,7 +532,7 @@ class PythonArenaServer:
                 message_types.CHAT_PEER_INFO,
                 {
                     "peer_username": players[1],
-                    "peer_host": second.address[0],
+                    "peer_host": second.chat_host or second.address[0],
                     "peer_port": second.chat_port,
                 },
             ),
@@ -540,7 +543,7 @@ class PythonArenaServer:
                 message_types.CHAT_PEER_INFO,
                 {
                     "peer_username": players[0],
-                    "peer_host": first.address[0],
+                    "peer_host": first.chat_host or first.address[0],
                     "peer_port": first.chat_port,
                 },
             ),

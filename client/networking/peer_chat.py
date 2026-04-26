@@ -77,6 +77,7 @@ class PeerChatService:
     def connect_to(self, host: str, port: int) -> None:
         self._running.set()
         peer_socket = socket.create_connection((host, port), timeout=2.0)
+        peer_socket.settimeout(None)
         self._adopt_peer_socket(peer_socket)
 
     def send_text(self, from_username: str, text: str) -> bool:
@@ -114,6 +115,7 @@ class PeerChatService:
             self._adopt_peer_socket(peer_socket)
 
     def _adopt_peer_socket(self, peer_socket: socket.socket) -> None:
+        peer_socket.settimeout(None)
         with self._peer_lock:
             old_peer = self._peer_socket
             self._peer_socket = peer_socket

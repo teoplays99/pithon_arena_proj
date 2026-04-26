@@ -301,6 +301,8 @@ def run_pygame_client(
                     if state.countdown_seconds > 0:
                         state.countdown_end_ms = pygame.time.get_ticks() + (state.countdown_seconds * 1000)
                 if message["type"] == message_types.CHAT_PEER_INFO:
+                    if state.phase != "lobby":
+                        continue
                     if peer_chat_service is None:
                         peer_chat_service = PeerChatService(inbound)
                     peer_host = str(message["payload"].get("peer_host", "")).strip()
@@ -335,8 +337,8 @@ def run_pygame_client(
                     )
                     if state.phase == "login" and not state.username and client._socket is None:
                         login_stage = "connect"
-                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    _handle_mouse_click(client, state, pygame, event.pos, peer_chat_service)
+                elif event.type == pygame.MOUSEBUTTONDOWN:
+                    _handle_mouse_click(client, state, pygame, event.pos, event.button, peer_chat_service)
 
             screen.fill(BACKGROUND_COLOR)
             _draw_ui(
@@ -406,16 +408,18 @@ def _handle_keydown(
             state.active_chat_peer = None
             state.peer_chat_info = None
             state.chat_input_text = ""
+            state.chat_input_active = False
             state.chat_messages.clear()
             if peer_chat_service is not None:
                 peer_chat_service.close_chat()
                 if state.outgoing_chat_request is None:
                     peer_chat_service.stop_listener()
             return active_field_index
-        if key == pygame.K_BACKSPACE:
-            state.chat_input_text = state.chat_input_text[:-1]
-            return active_field_index
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            if not state.chat_input_active:
+                state.chat_input_active = True
+                state.chat_input_text = ""
+                return active_field_index
             text = state.chat_input_text.strip()
             if text and peer_chat_service is not None and state.username:
                 if peer_chat_service.send_text(state.username, text):
@@ -425,8 +429,12 @@ def _handle_keydown(
                 else:
                     state.last_error = "Active chat is unavailable."
             state.chat_input_text = ""
+            state.chat_input_active = False
             return active_field_index
-        if event.unicode and event.unicode.isprintable():
+        if key == pygame.K_BACKSPACE and state.chat_input_active:
+            state.chat_input_text = state.chat_input_text[:-1]
+            return active_field_index
+        if state.chat_input_active and event.unicode and event.unicode.isprintable():
             state.chat_input_text += event.unicode
             return active_field_index
 
@@ -445,7 +453,7 @@ def _handle_keydown(
                 return active_field_index
 
         if key == pygame.K_ESCAPE:
-            return_to_lobby(state)
+            state.phase = "lobby"
             return active_field_index
         if key == pygame.K_UP:
             state.settings_field_index = (state.settings_field_index - 1) % len(SETTINGS_FIELDS)
@@ -461,7 +469,7 @@ def _handle_keydown(
         if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
             field = SETTINGS_FIELDS[state.settings_field_index]
             if field == "BACK":
-                return_to_lobby(state)
+                state.phase = "lobby"
             elif field in {"UP", "LEFT", "DOWN", "RIGHT"}:
                 state.rebinding_direction = field
             return active_field_index
@@ -990,10 +998,7 @@ def _lobby_button_rect(label: str) -> tuple[int, int, int, int]:
 
 
 def _draw_lobby_chat_panel(screen: Any, pygame: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
-    panel_x = WINDOW_WIDTH - RIGHT_PANEL_WIDTH - 280
-    panel_y = 52
-    panel_width = 420
-    panel_height = 308
+    panel_x, panel_y, panel_width, panel_height = _chat_panel_bounds()
     rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
     pygame.draw.rect(screen, (8, 8, 8), rect)
     pygame.draw.rect(screen, BOARD_BORDER, rect, 2)
@@ -1005,16 +1010,33 @@ def _draw_lobby_chat_panel(screen: Any, pygame: Any, font: Any, small_font: Any,
         pygame.draw.rect(screen, NEON_PINK, close_rect, 2)
         _draw_text(screen, font, "X", close_rect.x + 8, close_rect.y + 2, color=NEON_PINK)
 
-    message_y = panel_y + 68
-    for message in state.chat_messages[-8:]:
-        _draw_fit_text(screen, small_font, f"{message['from']}: {message['text']}", panel_x + 18, message_y, panel_width - 36)
-        message_y += 32
-
     if state.active_chat_peer is not None:
+        message_area = pygame.Rect(panel_x + 12, panel_y + 62, panel_width - 24, panel_height - 128)
+        pygame.draw.rect(screen, (8, 8, 8), message_area)
+        lines: list[str] = []
+        for message in state.chat_messages:
+            lines.extend(_wrap_text_lines(small_font, f"{message['from']}: {message['text']}", message_area.width - 8))
+        line_height = small_font.get_height() + 6
+        visible_lines = max(1, message_area.height // line_height)
+        max_scroll = max(0, len(lines) - visible_lines)
+        state.chat_scroll_offset = max(0, min(state.chat_scroll_offset, max_scroll))
+        start_index = max(0, len(lines) - visible_lines - state.chat_scroll_offset)
+        visible = lines[start_index:start_index + visible_lines]
+        old_clip = screen.get_clip()
+        screen.set_clip(message_area)
+        message_y = message_area.y + 4
+        for line in visible:
+            _draw_text(screen, small_font, line, message_area.x + 4, message_y)
+            message_y += line_height
+        screen.set_clip(old_clip)
+
         input_rect = pygame.Rect(panel_x + 12, panel_y + panel_height - 54, panel_width - 24, 36)
         pygame.draw.rect(screen, (20, 20, 20), input_rect)
         pygame.draw.rect(screen, BOARD_BORDER, input_rect, 1)
-        prompt = state.chat_input_text if state.chat_input_text else "Type here..."
+        if state.chat_input_active:
+            prompt = state.chat_input_text if state.chat_input_text else "Type here..."
+        else:
+            prompt = "Press Enter to type."
         _draw_fit_text(screen, small_font, prompt, input_rect.x + 10, input_rect.y + 8, input_rect.width - 20)
         return
 
@@ -1077,6 +1099,7 @@ def _append_chat_message(state: ClientAppState, payload: dict[str, Any]) -> None
         return
     state.active_chat_peer = from_username
     state.chat_messages.append({"from": from_username, "text": text})
+    state.chat_scroll_offset = 0
     if len(state.chat_messages) > CHAT_HISTORY_LIMIT:
         state.chat_messages = state.chat_messages[-CHAT_HISTORY_LIMIT:]
 
@@ -1086,19 +1109,33 @@ def _handle_mouse_click(
     state: ClientAppState,
     pygame: Any,
     position: tuple[int, int],
+    button: int,
     peer_chat_service: PeerChatService | None,
 ) -> None:
     if state.phase == "lobby":
         x, y = position
+        panel_x, panel_y, panel_width, panel_height = _chat_panel_bounds()
+        panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+        if state.active_chat_peer is not None and panel_rect.collidepoint(x, y) and button in (4, 5):
+            lines: list[str] = []
+            for message in state.chat_messages:
+                lines.extend(_wrap_text_lines(pygame.font.Font(str(FONT_PATH), 18), f"{message['from']}: {message['text']}", panel_width - 44))
+            line_height = pygame.font.Font(str(FONT_PATH), 18).get_height() + 6
+            visible_lines = max(1, (panel_height - 128) // line_height)
+            max_scroll = max(0, len(lines) - visible_lines)
+            if button == 4:
+                state.chat_scroll_offset = min(max_scroll, state.chat_scroll_offset + 1)
+            else:
+                state.chat_scroll_offset = max(0, state.chat_scroll_offset - 1)
+            return
         if state.active_chat_peer is not None:
-            panel_x = WINDOW_WIDTH - RIGHT_PANEL_WIDTH - 280
-            panel_y = 52
-            panel_width = 420
             close_rect = pygame.Rect(panel_x + panel_width - 52, panel_y + 10, 32, 32)
             if close_rect.collidepoint(x, y):
                 state.active_chat_peer = None
                 state.peer_chat_info = None
                 state.chat_input_text = ""
+                state.chat_input_active = False
+                state.chat_scroll_offset = 0
                 state.chat_messages.clear()
                 if peer_chat_service is not None:
                     peer_chat_service.close_chat()
@@ -1163,7 +1200,7 @@ def _handle_settings_click(client: ArenaClient, state: ClientAppState, pygame: A
     back_rect = pygame.Rect(SETTINGS_LEFT_X, row_y + 10, LOBBY_BUTTON_WIDTH, LOBBY_BUTTON_HEIGHT)
     if back_rect.collidepoint(x, y):
         state.settings_field_index = len(SETTINGS_FIELDS) - 1
-        return_to_lobby(state)
+        state.phase = "lobby"
 
 
 def _draw_health_bar(
@@ -1192,6 +1229,27 @@ def _draw_text(screen: Any, font: Any, text: str, x: int, y: int, color: tuple[i
     screen.blit(surface, (x, y))
 
 
+def _chat_panel_bounds() -> tuple[int, int, int, int]:
+    return (WINDOW_WIDTH - RIGHT_PANEL_WIDTH - 280, 52, 420, 308)
+
+
+def _wrap_text_lines(font: Any, text: str, max_width: int) -> list[str]:
+    words = text.split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        trial = f"{current} {word}"
+        if font.size(trial)[0] <= max_width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
 def _draw_fit_text(
     screen: Any,
     font: Any,
@@ -1203,21 +1261,7 @@ def _draw_fit_text(
     line_gap: int = 6,
 ) -> None:
     """Draw wrapped text inside a fixed width without overflowing the panel."""
-    words = text.split()
-    if not words:
-        return
-
-    lines: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        trial = f"{current} {word}"
-        if font.size(trial)[0] <= max_width:
-            current = trial
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-
+    lines = _wrap_text_lines(font, text, max_width)
     current_y = y
     for line in lines:
         _draw_text(screen, font, line, x, current_y, color=color)

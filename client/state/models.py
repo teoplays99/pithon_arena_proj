@@ -27,6 +27,8 @@ class ClientAppState:
     active_chat_peer: str | None = None
     chat_messages: list[dict[str, str]] = field(default_factory=list)
     chat_input_text: str = ""
+    chat_input_active: bool = False
+    chat_scroll_offset: int = 0
     chat_port: int = DEFAULT_CHAT_PORT
     last_error: str | None = None
     disconnected_player: str | None = None

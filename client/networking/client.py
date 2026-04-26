@@ -23,12 +23,37 @@ class ArenaClient:
             self._socket.close()
             self._socket = None
 
+    def _detect_chat_host(self) -> str | None:
+        if self._socket is None:
+            return None
+        try:
+            local_ip = str(self._socket.getsockname()[0])
+            if local_ip and not local_ip.startswith("127."):
+                return local_ip
+        except Exception:
+            pass
+        try:
+            probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                probe.connect(("8.8.8.8", 80))
+                local_ip = str(probe.getsockname()[0])
+                if local_ip:
+                    return local_ip
+            finally:
+                probe.close()
+        except OSError:
+            return None
+        return None
+
     def login(self, username: str, chat_port: int | None = None) -> dict[str, Any]:
         if self._socket is None:
             raise RuntimeError("Client is not connected.")
         payload: dict[str, Any] = {"username": username}
         if chat_port is not None:
             payload["chat_port"] = chat_port
+            chat_host = self._detect_chat_host()
+            if chat_host is not None:
+                payload["chat_host"] = chat_host
         send_message(self._socket, make_message(message_types.LOGIN, payload))
         return receive_message(self._socket)
 

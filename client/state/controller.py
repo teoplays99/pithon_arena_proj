@@ -23,6 +23,8 @@ def return_to_lobby(state: ClientAppState) -> ClientAppState:
     state.active_chat_peer = None
     state.chat_messages.clear()
     state.chat_input_text = ""
+    state.chat_input_active = False
+    state.chat_scroll_offset = 0
     return state
 
 
@@ -82,6 +84,8 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         state.active_chat_peer = None
         state.chat_messages.clear()
         state.chat_input_text = ""
+        state.chat_input_active = False
+        state.chat_scroll_offset = 0
         state.game_over = None
         state.challenger_username = None
         state.outgoing_challenge_target = None
@@ -110,6 +114,8 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
             state.incoming_chat_request = None
         state.chat_messages.clear()
         state.chat_input_text = ""
+        state.chat_input_active = False
+        state.chat_scroll_offset = 0
         return state
 
     if message_type == message_types.CHAT_REQUEST_SENT:
