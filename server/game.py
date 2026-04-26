@@ -40,6 +40,14 @@ CHEER_RIPPLE_SPEED = 2
 CHEER_HISTORY_LIMIT = 30
 CHEER_RING_THICKNESS = 0.75
 MATCH_CHAT_HISTORY_LIMIT = 50
+QUADRANT_ROCK_TEMPLATES = (
+    ((8, 2, 1),),
+    ((9, 2, 2),),
+    ((10, 2, 3),),
+    ((8, 1, 1), (11, 4, 2)),
+    ((8, 4, 2), (11, 1, 1)),
+    ((8, 2, 2), (11, 5, 1)),
+)
 
 
 @dataclass
@@ -98,17 +106,18 @@ class Match:
         }
 
     def _default_obstacles(self) -> list[tuple[int, int]]:
-        safe_cells = self._spawn_safe_cells()
-        candidates = [
-            (x, y)
-            for y in range(1, self.board_height - 1)
-            for x in range(1, self.board_width - 1)
-            if (x, y) not in safe_cells
-        ]
-        obstacle_count = min(4, len(candidates))
-        if obstacle_count == 0:
+        if self.board_width < 30 or self.board_height < 20:
             return []
-        return random.sample(candidates, k=obstacle_count)
+        safe_cells = self._spawn_safe_cells()
+        templates = list(QUADRANT_ROCK_TEMPLATES)
+        random.shuffle(templates)
+        for template in templates:
+            mirrored = self._mirrored_template_obstacles(template)
+            if any(cell in safe_cells for cell in mirrored):
+                continue
+            if self._all_floor_cells_connected(mirrored):
+                return sorted(mirrored)
+        return []
 
     def _spawn_safe_cells(self) -> set[tuple[int, int]]:
         safe_cells: set[tuple[int, int]] = set()
@@ -121,6 +130,47 @@ class Match:
                         if 0 <= x < self.board_width and 0 <= y < self.board_height:
                             safe_cells.add((x, y))
         return safe_cells
+
+    def _mirrored_template_obstacles(self, template: tuple[tuple[int, int, int], ...]) -> list[tuple[int, int]]:
+        cells: set[tuple[int, int]] = set()
+        for start_x, start_y, size in template:
+            for dy in range(size):
+                for dx in range(size):
+                    x = start_x + dx
+                    y = start_y + dy
+                    mirrored_positions = (
+                        (x, y),
+                        (self.board_width - 1 - x, y),
+                        (x, self.board_height - 1 - y),
+                        (self.board_width - 1 - x, self.board_height - 1 - y),
+                    )
+                    cells.update(mirrored_positions)
+        return list(cells)
+
+    def _all_floor_cells_connected(self, obstacles: list[tuple[int, int]]) -> bool:
+        obstacle_set = set(obstacles)
+        free_cells = [
+            (x, y)
+            for y in range(self.board_height)
+            for x in range(self.board_width)
+            if (x, y) not in obstacle_set
+        ]
+        if not free_cells:
+            return True
+        start = free_cells[0]
+        stack = [start]
+        visited = {start}
+        while stack:
+            x, y = stack.pop()
+            for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                neighbor = (x + dx, y + dy)
+                if not self._is_in_bounds(neighbor):
+                    continue
+                if neighbor in obstacle_set or neighbor in visited:
+                    continue
+                visited.add(neighbor)
+                stack.append(neighbor)
+        return len(visited) == len(free_cells)
 
     def queue_input(self, username: str, direction: str) -> bool:
         """Store the latest direction input for a player."""

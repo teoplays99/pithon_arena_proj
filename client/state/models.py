@@ -19,6 +19,7 @@ class ClientAppState:
     phase: str = "login"
     match_state: dict[str, Any] | None = None
     game_over: dict[str, Any] | None = None
+    guessed_winner_username: str | None = None
     challenger_username: str | None = None
     outgoing_challenge_target: str | None = None
     spectator: bool = False

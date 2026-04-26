@@ -13,6 +13,7 @@ def return_to_lobby(state: ClientAppState) -> ClientAppState:
     state.phase = "lobby"
     state.match_state = None
     state.game_over = None
+    state.guessed_winner_username = None
     state.spectator = False
     state.disconnected_player = None
     state.last_error = None
@@ -76,9 +77,9 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         return state
 
     if message_type == message_types.MATCH_START:
-        state.phase = "match"
         state.match_state = dict(payload.get("state", {}))
         state.spectator = bool(payload.get("spectator", False))
+        state.phase = "watch_guess" if state.spectator else "match"
         state.countdown_seconds = int(payload.get("countdown_seconds", 0) or 0)
         state.countdown_end_ms = None
         state.last_cheer_sent_ms = None
@@ -94,6 +95,8 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         state.chat_input_active = False
         state.chat_scroll_offset = 0
         state.game_over = None
+        if not state.spectator:
+            state.guessed_winner_username = None
         state.challenger_username = None
         state.outgoing_challenge_target = None
         state.last_error = None

@@ -577,6 +577,24 @@ def _handle_keydown(
                 state.last_cheer_sent_ms = now_ms
             return active_field_index
 
+    if state.phase == "watch_guess":
+        if key == pygame.K_ESCAPE:
+            return_to_lobby(state)
+            return active_field_index
+        if key == pygame.K_LEFT:
+            state.selected_lobby_index = 0
+            return active_field_index
+        if key == pygame.K_RIGHT:
+            state.selected_lobby_index = 1
+            return active_field_index
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            players = list(((state.match_state or {}).get("players") or []))
+            if players:
+                choice_index = min(state.selected_lobby_index, len(players) - 1)
+                state.guessed_winner_username = str(players[choice_index])
+                state.phase = "match"
+            return active_field_index
+
     if key == pygame.K_a and state.phase == "lobby" and state.challenger_username:
         client.send(message_types.CHALLENGE_ACCEPT, {"challenger_username": state.challenger_username})
     elif key == pygame.K_w and state.phase == "lobby" and state.has_active_match:
@@ -634,8 +652,10 @@ def _draw_ui(
         _draw_settings(screen, pygame, font, small_font, lobby_title_font, settings_label_font, lobby_button_font, state)
     elif state.phase == "match":
         _draw_match(screen, pygame, font, small_font, player_name_font, pie_image, state)
+    elif state.phase == "watch_guess":
+        _draw_watch_guess(screen, pygame, font, small_font, lobby_title_font, lobby_button_font, state)
     elif state.phase == "game_over":
-        _draw_game_over(screen, lobby_title_font, font, small_font, state)
+        _draw_game_over(screen, pygame, lobby_title_font, font, small_font, state)
     else:
         _draw_text(screen, font, "Connecting...", 20, 90)
     _draw_user_label(screen, user_label_font, state)
@@ -681,7 +701,7 @@ def _draw_login(
         y += 60
 
     if login_stage == "connect":
-        _draw_text(screen, small_font, "After connecting, the client will ask for your username.", 40, 360)
+        _draw_text(screen, small_font, "After connecting, you will be asked for your username.", 40, 360)
     else:
         _draw_text(screen, small_font, f"Connected to {form['host']}:{form['port']}", 40, 300)
 
@@ -848,7 +868,14 @@ def game_over_result_text(state: ClientAppState) -> str:
     game_over = state.game_over or {}
     winner = game_over.get("winner")
     if state.spectator:
-        return f"{winner} won!" if winner else "It ended in a draw!"
+        guessed = state.guessed_winner_username
+        if winner is None:
+            return "It ended in a draw!"
+        if guessed and guessed == winner:
+            return f"You guessed right, {winner} won!"
+        if guessed:
+            return f"You didn't guess right this time, {guessed} lost."
+        return f"{winner} won!"
     if winner is None:
         return "You tied."
     if winner == state.username:
@@ -860,11 +887,19 @@ def game_over_result_color(state: ClientAppState) -> tuple[int, int, int]:
     """Return the result headline color for players or spectators."""
     game_over = state.game_over or {}
     winner = game_over.get("winner")
-    if state.spectator and winner is not None:
-        match_state = game_over.get("state", {})
-        snakes = match_state.get("snakes", {}) if isinstance(match_state, dict) else {}
-        winner_snake = snakes.get(winner, {}) if isinstance(snakes, dict) else {}
-        return snake_color_rgb(str(winner_snake.get("color") or "pink"))
+    if state.spectator:
+        target_username = None
+        if winner is not None and state.guessed_winner_username == winner:
+            target_username = str(winner)
+        elif state.guessed_winner_username:
+            target_username = str(state.guessed_winner_username)
+        elif winner is not None:
+            target_username = str(winner)
+        if target_username is not None:
+            match_state = game_over.get("state", {})
+            snakes = match_state.get("snakes", {}) if isinstance(match_state, dict) else {}
+            target_snake = snakes.get(target_username, {}) if isinstance(snakes, dict) else {}
+            return snake_color_rgb(str(target_snake.get("color") or "pink"))
     if winner is None:
         return TEXT_COLOR
     if winner == state.username:
@@ -882,19 +917,79 @@ def game_over_reason_text(reason: str | None) -> str:
     return reason_map.get(reason or "", "The arena has spoken.")
 
 
-def _draw_game_over(screen: Any, title_font: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
+def _draw_game_over(screen: Any, pygame: Any, title_font: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
     game_over = state.game_over or {}
     winner = game_over.get("winner")
     reason = game_over.get("state", {}).get("reason") or game_over.get("reason")
     _draw_text(screen, title_font, "GAME OVER", 20, 96, color=NEON_PINK)
     _draw_text(screen, font, game_over_result_text(state), 20, 180, color=game_over_result_color(state))
+    match_state = game_over.get("state", {}) if isinstance(game_over.get("state"), dict) else {}
+    snakes = match_state.get("snakes", {}) if isinstance(match_state, dict) else {}
     if state.spectator and winner is not None:
         _draw_text(screen, small_font, f"Winner: {winner}", 20, 228, color=TEXT_COLOR)
         reason_y = 268
     else:
         reason_y = 228
     _draw_text(screen, small_font, game_over_reason_text(reason), 20, reason_y, color=TEXT_COLOR)
-    _draw_text(screen, small_font, "Press L to return to lobby.", 20, reason_y + 60, color=TEXT_COLOR)
+    _draw_final_health_cards(screen, pygame, font, small_font, snakes, 20, reason_y + 56)
+    _draw_text(screen, small_font, "Press L to return to lobby.", 20, reason_y + 172, color=TEXT_COLOR)
+
+
+def _draw_final_health_cards(
+    screen: Any,
+    pygame: Any,
+    font: Any,
+    small_font: Any,
+    snakes: dict[str, Any],
+    start_x: int,
+    start_y: int,
+) -> None:
+    card_width = 180
+    card_height = 108
+    gap = 18
+    for index, (username, snake) in enumerate(list(snakes.items())[:2]):
+        x = start_x + index * (card_width + gap)
+        color = snake_color_rgb(str((snake or {}).get("color") or "pink"))
+        health = int((snake or {}).get("health", 0) or 0)
+        rect = pygame.Rect(x, start_y, card_width, card_height)
+        pygame.draw.rect(screen, (20, 20, 20), rect)
+        pygame.draw.rect(screen, color, rect, 3)
+        _draw_text(screen, small_font, str(username), x + 14, start_y + 14, color=color)
+        _draw_health_bar(screen, pygame, x + 14, start_y + 46, card_width - 28, 16, health, color)
+        _draw_text(screen, font, f"Health {health}", x + 14, start_y + 70, color=TEXT_COLOR)
+
+
+def _draw_watch_guess(
+    screen: Any,
+    pygame: Any,
+    font: Any,
+    small_font: Any,
+    title_font: Any,
+    button_font: Any,
+    state: ClientAppState,
+) -> None:
+    players = list(((state.match_state or {}).get("players") or []))
+    snakes = ((state.match_state or {}).get("snakes") or {})
+    _draw_text(screen, title_font, "PITHON ARENA", 20, 74)
+    _draw_text(screen, font, "Who do you think will win?", 240, 180, color=TEXT_COLOR)
+    if len(players) < 2:
+        _draw_text(screen, small_font, "Waiting for match data...", 300, 250, color=TEXT_COLOR)
+        return
+    button_y = 280
+    button_width = 220
+    button_height = 68
+    gap = 48
+    total_width = (button_width * 2) + gap
+    start_x = (WINDOW_WIDTH // 2) - (total_width // 2)
+    for index, username in enumerate(players[:2]):
+        x = start_x + index * (button_width + gap)
+        rect = pygame.Rect(x, button_y, button_width, button_height)
+        color = snake_color_rgb(str(((snakes.get(username) or {}).get("color")) or "pink"))
+        is_selected = state.selected_lobby_index == index
+        pygame.draw.rect(screen, (24, 24, 24), rect)
+        pygame.draw.rect(screen, color, rect, 4 if is_selected else 3)
+        _draw_text(screen, button_font, str(username), x + 26, button_y + 18, color=color)
+    _draw_text(screen, small_font, "Click a player or press Left/Right then Enter.", 230, 380, color=TEXT_COLOR)
 
 
 def _draw_match_countdown(screen: Any, pygame: Any, font: Any, state: ClientAppState) -> None:
@@ -1254,8 +1349,8 @@ def _handle_mouse_click(
     button: int,
     peer_chat_service: PeerChatService | None,
 ) -> None:
+    x, y = position
     if state.phase == "lobby":
-        x, y = position
         panel_x, panel_y, panel_width, panel_height = _chat_panel_bounds()
         panel_rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
         if state.active_chat_peer is not None and panel_rect.collidepoint(x, y) and button in (4, 5):
@@ -1287,7 +1382,7 @@ def _handle_mouse_click(
         button_states = {
             "INVITE": _invite_enabled(state),
             "ACCEPT": state.challenger_username is not None,
-            "WATCH": True,
+            "WATCH": state.has_active_match,
             "SETTINGS": True,
             "CHAT": selected_lobby_username(state) is not None,
         }
@@ -1310,6 +1405,25 @@ def _handle_mouse_click(
                     state.phase = "settings"
                 elif label == "CHAT":
                     _handle_chat_action(client, state, peer_chat_service)
+                return
+        return
+
+    if state.phase == "watch_guess":
+        players = list(((state.match_state or {}).get("players") or []))
+        if len(players) < 2:
+            return
+        button_y = 280
+        button_width = 220
+        button_height = 68
+        gap = 48
+        total_width = (button_width * 2) + gap
+        start_x = (WINDOW_WIDTH // 2) - (total_width // 2)
+        for index, username in enumerate(players[:2]):
+            rect = pygame.Rect(start_x + index * (button_width + gap), button_y, button_width, button_height)
+            if rect.collidepoint(x, y):
+                state.selected_lobby_index = index
+                state.guessed_winner_username = str(username)
+                state.phase = "match"
                 return
         return
 
