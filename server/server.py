@@ -20,6 +20,7 @@ class PythonArenaServer:
     """Minimal server bootstrap for login and lobby presence."""
 
     MATCH_START_COUNTDOWN_SECONDS = 3
+    CHAT_REQUEST_TTL_SECONDS = 60
 
     def __init__(self, host: str, port: int, db_path: str = "instance/python_arena_runtime.db") -> None:
         self.host = host
@@ -176,6 +177,10 @@ class PythonArenaServer:
                     self.handle_watch_match(session)
                 elif message["type"] == message_types.CHEER:
                     self.handle_cheer(session, message["payload"])
+                elif message["type"] == message_types.CHAT_REQUEST:
+                    self.handle_chat_request(session, message["payload"])
+                elif message["type"] == message_types.CHAT_REQUEST_ACCEPT:
+                    self.handle_chat_request_accept(session, message["payload"])
                 elif message["type"] == message_types.SETTINGS_UPDATE:
                     self.handle_settings_update(session, message["payload"])
                 else:
@@ -199,6 +204,7 @@ class PythonArenaServer:
 
     def broadcast_online_users(self) -> None:
         """Broadcast the current online/waiting list to all connected sessions."""
+        self._flush_expired_chat_requests()
         usernames = self.user_registry.list_usernames()
         waiting_players = self.lobby_manager.waiting_players()
         for username in usernames:
@@ -221,6 +227,21 @@ class PythonArenaServer:
                 )
             except OSError:
                 continue
+
+    def _flush_expired_chat_requests(self) -> None:
+        for request in self.lobby_manager.expired_chat_requests():
+            target_session = self.user_registry.get_session(str(request["target_username"]))
+            requester_session = self.user_registry.get_session(str(request["requester_username"]))
+            message = make_message(
+                message_types.CHAT_REQUEST_CANCELED,
+                {
+                    "requester_username": request["requester_username"],
+                    "target_username": request["target_username"],
+                    "message": "Chat request expired.",
+                },
+            )
+            self._safe_send(target_session, message)
+            self._safe_send(requester_session, message)
 
     def handle_challenge_player(self, session: UserSession, payload: dict[str, object]) -> None:
         """Handle an invite request from one player to another."""
@@ -361,6 +382,72 @@ class PythonArenaServer:
             return
         session.snake_color = color_name
         self._safe_send(session, make_message(message_types.SETTINGS_UPDATE, {"snake_color": color_name}))
+
+    def handle_chat_request(self, session: UserSession, payload: dict[str, object]) -> None:
+        """Send a lobby peer-chat request to the selected target."""
+        if session.username is None:
+            return
+        target_username = str(payload.get("target_username", "")).strip()
+        try:
+            requester_port = int(payload.get("chat_port", 0) or 0)
+        except (TypeError, ValueError):
+            self._safe_send(session, make_message(message_types.ERROR, {"message": "Invalid chat port."}))
+            return
+        success, message, canceled = self.lobby_manager.issue_chat_request(
+            session.username,
+            target_username,
+            session.address[0],
+            requester_port,
+            set(self.user_registry.list_usernames()),
+            ttl_seconds=self.CHAT_REQUEST_TTL_SECONDS,
+        )
+        if canceled is not None:
+            canceled_target = str(canceled["target_username"])
+            canceled_target_session = self.user_registry.get_session(canceled_target)
+            self._safe_send(
+                canceled_target_session,
+                make_message(
+                    message_types.CHAT_REQUEST_CANCELED,
+                    {
+                        "requester_username": canceled["requester_username"],
+                        "target_username": canceled_target,
+                        "message": "Chat request replaced by a newer request.",
+                    },
+                ),
+            )
+        if not success:
+            self._safe_send(session, make_message(message_types.ERROR, {"message": message}))
+            return
+        target_session = self.user_registry.get_session(target_username)
+        request_payload = {
+            "requester_username": session.username,
+            "target_username": target_username,
+            "message": f"Chat request from {session.username}. You must first close current chat to accept.",
+            "expires_in_seconds": self.CHAT_REQUEST_TTL_SECONDS,
+        }
+        self._safe_send(session, make_message(message_types.CHAT_REQUEST_SENT, request_payload))
+        self._safe_send(target_session, make_message(message_types.CHAT_REQUEST_RECEIVED, request_payload))
+
+    def handle_chat_request_accept(self, session: UserSession, payload: dict[str, object]) -> None:
+        """Accept a pending chat request and send peer bootstrap info."""
+        if session.username is None:
+            return
+        requester_username = str(payload.get("requester_username", "")).strip()
+        success, message, request = self.lobby_manager.accept_chat_request(session.username, requester_username)
+        if not success or request is None:
+            self._safe_send(session, make_message(message_types.ERROR, {"message": message}))
+            return
+        self._safe_send(
+            session,
+            make_message(
+                message_types.CHAT_PEER_INFO,
+                {
+                    "peer_username": requester_username,
+                    "peer_host": request["requester_host"],
+                    "peer_port": request["requester_port"],
+                },
+            ),
+        )
 
     def handle_cheer(self, session: UserSession, payload: dict[str, object]) -> None:
         """Append a cheer to the active match and broadcast the updated state."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from time import monotonic
 from threading import Lock
 
 
@@ -12,6 +13,7 @@ class LobbyManager:
         self._lock = Lock()
         self._waiting_players: set[str] = set()
         self._pending_challenges: dict[str, str] = {}
+        self._pending_chat_requests: dict[str, dict[str, object]] = {}
 
     def set_waiting(self, username: str) -> None:
         """Mark a user as waiting for an opponent."""
@@ -33,11 +35,29 @@ class LobbyManager:
                 for target, challenger in self._pending_challenges.items()
                 if challenger != username
             }
+            self._pending_chat_requests.pop(username, None)
+            self._pending_chat_requests = {
+                target: request
+                for target, request in self._pending_chat_requests.items()
+                if request["requester_username"] != username
+            }
 
     def clear_all_invites(self) -> None:
         """Remove every pending invite while leaving waiting players intact."""
         with self._lock:
             self._pending_challenges.clear()
+
+    def _prune_expired_chat_requests_locked(self) -> list[dict[str, object]]:
+        now = monotonic()
+        expired: list[dict[str, object]] = []
+        kept: dict[str, dict[str, object]] = {}
+        for target, request in self._pending_chat_requests.items():
+            if float(request["expires_at"]) <= now:
+                expired.append(dict(request))
+            else:
+                kept[target] = request
+        self._pending_chat_requests = kept
+        return expired
 
     def issue_challenge(self, challenger: str, target: str, online_users: set[str]) -> tuple[bool, str]:
         """Create a pending invite between two online users."""
@@ -113,3 +133,69 @@ class LobbyManager:
         """Return waiting players sorted for display."""
         with self._lock:
             return sorted(self._waiting_players)
+
+    def issue_chat_request(
+        self,
+        requester_username: str,
+        target_username: str,
+        requester_host: str,
+        requester_port: int,
+        online_users: set[str],
+        ttl_seconds: int,
+    ) -> tuple[bool, str, dict[str, object] | None]:
+        """Store one pending chat request and replace any older outgoing one."""
+        with self._lock:
+            expired = self._prune_expired_chat_requests_locked()
+            canceled: dict[str, object] | None = None
+            if requester_username == target_username:
+                return False, "You cannot chat with yourself.", None
+            if requester_username not in online_users or target_username not in online_users:
+                return False, "Both users must be online.", None
+            if requester_port <= 0:
+                return False, "Invalid chat port.", None
+            existing_for_target = self._pending_chat_requests.get(target_username)
+            if (
+                existing_for_target is not None
+                and existing_for_target["requester_username"] != requester_username
+            ):
+                return False, "Target player already has a pending chat request.", None
+
+            for pending_target, request in list(self._pending_chat_requests.items()):
+                if request["requester_username"] == requester_username:
+                    canceled = dict(request)
+                    self._pending_chat_requests.pop(pending_target, None)
+                    break
+
+            request = {
+                "requester_username": requester_username,
+                "target_username": target_username,
+                "requester_host": requester_host,
+                "requester_port": requester_port,
+                "expires_at": monotonic() + ttl_seconds,
+            }
+            self._pending_chat_requests[target_username] = request
+            if canceled is None and expired:
+                canceled = expired[0]
+            return True, "Chat request sent.", canceled
+
+    def accept_chat_request(self, target_username: str, requester_username: str) -> tuple[bool, str, dict[str, object] | None]:
+        """Accept a matching unexpired chat request."""
+        with self._lock:
+            self._prune_expired_chat_requests_locked()
+            request = self._pending_chat_requests.get(target_username)
+            if request is None or request["requester_username"] != requester_username:
+                return False, "No matching chat request.", None
+            self._pending_chat_requests.pop(target_username, None)
+            return True, "Chat request accepted.", dict(request)
+
+    def pending_chat_request_for(self, target_username: str) -> dict[str, object] | None:
+        """Return the current pending chat request for one target."""
+        with self._lock:
+            self._prune_expired_chat_requests_locked()
+            request = self._pending_chat_requests.get(target_username)
+            return dict(request) if request is not None else None
+
+    def expired_chat_requests(self) -> list[dict[str, object]]:
+        """Remove and return all expired chat requests."""
+        with self._lock:
+            return self._prune_expired_chat_requests_locked()

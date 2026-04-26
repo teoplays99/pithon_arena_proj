@@ -17,6 +17,12 @@ def return_to_lobby(state: ClientAppState) -> ClientAppState:
     state.disconnected_player = None
     state.last_error = None
     state.last_cheer_sent_ms = None
+    state.peer_chat_info = None
+    state.incoming_chat_request = None
+    state.outgoing_chat_request = None
+    state.active_chat_peer = None
+    state.chat_messages.clear()
+    state.chat_input_text = ""
     return state
 
 
@@ -70,6 +76,12 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         state.countdown_seconds = int(payload.get("countdown_seconds", 0) or 0)
         state.countdown_end_ms = None
         state.last_cheer_sent_ms = None
+        state.peer_chat_info = None
+        state.incoming_chat_request = None
+        state.outgoing_chat_request = None
+        state.active_chat_peer = None
+        state.chat_messages.clear()
+        state.chat_input_text = ""
         state.game_over = None
         state.challenger_username = None
         state.outgoing_challenge_target = None
@@ -91,6 +103,34 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
 
     if message_type == message_types.CHAT_PEER_INFO:
         state.peer_chat_info = dict(payload)
+        state.active_chat_peer = str(payload.get("peer_username", "") or "") or None
+        state.outgoing_chat_request = None
+        incoming = state.incoming_chat_request or {}
+        if incoming.get("requester_username") == state.active_chat_peer:
+            state.incoming_chat_request = None
+        state.chat_messages.clear()
+        state.chat_input_text = ""
+        return state
+
+    if message_type == message_types.CHAT_REQUEST_SENT:
+        state.outgoing_chat_request = dict(payload)
+        return state
+
+    if message_type == message_types.CHAT_REQUEST_RECEIVED:
+        state.incoming_chat_request = dict(payload)
+        if state.active_chat_peer is not None:
+            state.last_error = str(payload.get("message", "Incoming chat request."))
+        return state
+
+    if message_type == message_types.CHAT_REQUEST_CANCELED:
+        requester = str(payload.get("requester_username", "") or "")
+        target = str(payload.get("target_username", "") or "")
+        incoming = state.incoming_chat_request or {}
+        if incoming.get("requester_username") == requester:
+            state.incoming_chat_request = None
+        outgoing = state.outgoing_chat_request or {}
+        if outgoing.get("target_username") == target:
+            state.outgoing_chat_request = None
         return state
 
     if message_type == message_types.ERROR:

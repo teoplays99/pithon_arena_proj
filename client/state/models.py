@@ -20,6 +20,11 @@ class ClientAppState:
     outgoing_challenge_target: str | None = None
     spectator: bool = False
     peer_chat_info: dict[str, Any] | None = None
+    incoming_chat_request: dict[str, Any] | None = None
+    outgoing_chat_request: dict[str, Any] | None = None
+    active_chat_peer: str | None = None
+    chat_messages: list[dict[str, str]] = field(default_factory=list)
+    chat_input_text: str = ""
     last_error: str | None = None
     disconnected_player: str | None = None
     selected_lobby_index: int = 0

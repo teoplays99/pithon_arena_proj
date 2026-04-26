@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from client.networking.client import ArenaClient
+from client.networking.peer_chat import PEER_CHAT_CONNECTED, PEER_CHAT_MESSAGE, PeerChatService
 from client.state.controller import apply_server_message, return_to_lobby
 from client.state.models import ClientAppState
 from common import message_types
@@ -35,6 +36,7 @@ NEON_RED = (255, 40, 40)
 TEXT_COLOR = (236, 236, 236)
 FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "Monocraft.ttc"
 LOBBY_TITLE_FONT_PATH = Path(__file__).resolve().parents[2] / "assets" / "fonts" / "Geet-Regular.ttf"
+PIE_IMAGE_PATH = Path(__file__).resolve().parents[2] / "assets" / "images" / "pie.png"
 LOBBY_LEFT_WIDTH = int(WINDOW_WIDTH * 0.67)
 LOBBY_PADDING_X = 36
 LOBBY_TITLE_Y = 54
@@ -55,11 +57,19 @@ SETTINGS_PREVIEW_X = 560
 SETTINGS_PREVIEW_Y = 150
 SETTINGS_FIELDS = ["SNAKE_COLOR", "UP", "LEFT", "DOWN", "RIGHT", "BACK"]
 CHEER_COOLDOWN_MS = 1000
+CHAT_HISTORY_LIMIT = 24
 
 
 def challengeable_users(state: ClientAppState) -> list[str]:
     """Return online users that can be challenged from the lobby."""
     return [username for username in state.online_users if username and username != state.username]
+
+
+def selected_lobby_username(state: ClientAppState) -> str | None:
+    users = challengeable_users(state)
+    if not users:
+        return None
+    return users[state.selected_lobby_index % len(users)]
 
 
 def snake_color_rgb(color_name: str) -> tuple[int, int, int]:
@@ -188,12 +198,14 @@ def run_pygame_client(
     player_name_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 20)
     lobby_player_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 22)
     settings_label_font = pygame.font.Font(str(LOBBY_TITLE_FONT_PATH), 24)
+    pie_image = _load_pie_image(pygame)
 
     client = ArenaClient()
     state = ClientAppState()
     inbound: queue.Queue[dict[str, Any]] = queue.Queue()
     running = True
     receiver_thread: threading.Thread | None = None
+    peer_chat_service = PeerChatService(inbound)
     lobby_notice: dict[str, object] = {"message": None, "started_ms": 0}
     form = default_login_form(host, port, username, chat_port)
     login_stage = "connect"
@@ -271,9 +283,35 @@ def run_pygame_client(
                 except queue.Empty:
                     break
                 apply_server_message(state, message)
+                if message["type"] == PEER_CHAT_CONNECTED:
+                    if state.active_chat_peer is None:
+                        if state.outgoing_chat_request is not None:
+                            state.active_chat_peer = str(state.outgoing_chat_request.get("target_username", "") or "") or None
+                            state.outgoing_chat_request = None
+                        elif state.peer_chat_info is not None:
+                            state.active_chat_peer = str(state.peer_chat_info.get("peer_username", "") or "") or None
+                    continue
+                if message["type"] == PEER_CHAT_MESSAGE:
+                    _append_chat_message(state, message["payload"])
+                    continue
                 if message["type"] == message_types.MATCH_START:
+                    if peer_chat_service is not None:
+                        peer_chat_service.shutdown()
                     if state.countdown_seconds > 0:
                         state.countdown_end_ms = pygame.time.get_ticks() + (state.countdown_seconds * 1000)
+                if message["type"] == message_types.CHAT_PEER_INFO:
+                    if peer_chat_service is None:
+                        peer_chat_service = PeerChatService(inbound)
+                    peer_host = str(message["payload"].get("peer_host", "")).strip()
+                    peer_port = int(message["payload"].get("peer_port", 0) or 0)
+                    if peer_host and peer_port > 0:
+                        try:
+                            peer_chat_service.connect_to(peer_host, peer_port)
+                        except OSError:
+                            state.last_error = "Peer chat connection failed."
+                if message["type"] == message_types.CHAT_REQUEST_CANCELED:
+                    if state.outgoing_chat_request is None and state.active_chat_peer is None and peer_chat_service is not None:
+                        peer_chat_service.stop_listener()
                 if state.phase == "lobby" and state.last_error:
                     lobby_notice["message"] = state.last_error
                     lobby_notice["started_ms"] = pygame.time.get_ticks()
@@ -292,11 +330,12 @@ def run_pygame_client(
                         login_stage,
                         active_field_index,
                         submit_login,
+                        peer_chat_service,
                     )
                     if state.phase == "login" and not state.username and client._socket is None:
                         login_stage = "connect"
                 elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                    _handle_mouse_click(client, state, pygame, event.pos)
+                    _handle_mouse_click(client, state, pygame, event.pos, peer_chat_service)
 
             screen.fill(BACKGROUND_COLOR)
             _draw_ui(
@@ -310,6 +349,7 @@ def run_pygame_client(
                 player_name_font,
                 lobby_player_font,
                 settings_label_font,
+                pie_image,
                 state,
                 form,
                 login_stage,
@@ -319,6 +359,8 @@ def run_pygame_client(
             pygame.display.flip()
             clock.tick(30)
     finally:
+        if peer_chat_service is not None:
+            peer_chat_service.shutdown()
         client.close()
         pygame.quit()
 
@@ -332,6 +374,7 @@ def _handle_keydown(
     login_stage: str,
     active_field_index: int,
     submit_login: Any,
+    peer_chat_service: PeerChatService | None,
 ) -> int:
     """Map keys to protocol actions."""
     key = event.key
@@ -356,6 +399,35 @@ def _handle_keydown(
         if event.unicode and event.unicode.isprintable():
             form[field_name] += event.unicode
         return active_field_index
+
+    if state.phase == "lobby" and state.active_chat_peer:
+        if key == pygame.K_ESCAPE:
+            state.active_chat_peer = None
+            state.peer_chat_info = None
+            state.chat_input_text = ""
+            state.chat_messages.clear()
+            if peer_chat_service is not None:
+                peer_chat_service.close_chat()
+                if state.outgoing_chat_request is None:
+                    peer_chat_service.stop_listener()
+            return active_field_index
+        if key == pygame.K_BACKSPACE:
+            state.chat_input_text = state.chat_input_text[:-1]
+            return active_field_index
+        if key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+            text = state.chat_input_text.strip()
+            if text and peer_chat_service is not None and state.username:
+                if peer_chat_service.send_text(state.username, text):
+                    state.chat_messages.append({"from": state.username, "text": text})
+                    if len(state.chat_messages) > CHAT_HISTORY_LIMIT:
+                        state.chat_messages = state.chat_messages[-CHAT_HISTORY_LIMIT:]
+                else:
+                    state.last_error = "Active chat is unavailable."
+            state.chat_input_text = ""
+            return active_field_index
+        if event.unicode and event.unicode.isprintable():
+            state.chat_input_text += event.unicode
+            return active_field_index
 
     if state.phase == "settings":
         if state.rebinding_direction is not None:
@@ -423,7 +495,13 @@ def _handle_keydown(
     elif key == pygame.K_w and state.phase == "lobby":
         client.send(message_types.WATCH_MATCH, {})
     elif key == pygame.K_c and state.phase == "lobby":
-        client.send(message_types.CHEER, {"text": "Let's go!"})
+        _handle_chat_action(client, state, peer_chat_service)
+    elif key == pygame.K_i and state.phase == "lobby":
+        if not _invite_enabled(state):
+            return active_field_index
+        selected = selected_lobby_username(state)
+        if selected is not None:
+            client.send(message_types.CHALLENGE_PLAYER, {"target_username": selected})
     elif key == pygame.K_s and state.phase == "lobby":
         state.phase = "settings"
     elif key == pygame.K_l and state.phase == "game_over":
@@ -435,12 +513,6 @@ def _handle_keydown(
             return active_field_index
         step = -1 if key == pygame.K_UP else 1
         state.selected_lobby_index = (state.selected_lobby_index + step) % len(users)
-    elif key in (pygame.K_RETURN, pygame.K_KP_ENTER) and state.phase == "lobby":
-        if not _invite_enabled(state):
-            return active_field_index
-        users = challengeable_users(state)
-        selected = users[state.selected_lobby_index % len(users)]
-        client.send(message_types.CHALLENGE_PLAYER, {"target_username": selected})
     return active_field_index
 
 
@@ -455,6 +527,7 @@ def _draw_ui(
     player_name_font: Any,
     lobby_player_font: Any,
     settings_label_font: Any,
+    pie_image: Any,
     state: ClientAppState,
     form: dict[str, str],
     login_stage: str,
@@ -473,7 +546,7 @@ def _draw_ui(
     elif state.phase == "settings":
         _draw_settings(screen, pygame, font, small_font, lobby_title_font, settings_label_font, lobby_button_font, state)
     elif state.phase == "match":
-        _draw_match(screen, pygame, font, small_font, player_name_font, state)
+        _draw_match(screen, pygame, font, small_font, player_name_font, pie_image, state)
     elif state.phase == "game_over":
         _draw_game_over(screen, lobby_title_font, font, small_font, state)
     else:
@@ -578,13 +651,16 @@ def _draw_lobby(
         ("ACCEPT", state.challenger_username is not None),
         ("WATCH", True),
         ("SETTINGS", True),
+        ("CHAT", selected_lobby_username(state) is not None),
     ]
     button_x = LOBBY_PADDING_X
     for label, enabled in buttons:
         _draw_lobby_button(screen, pygame, lobby_button_font, label, button_x, button_y, enabled=enabled)
         button_x += LOBBY_BUTTON_WIDTH + LOBBY_BUTTON_GAP
 
-    _draw_text(screen, small_font, "Up/Down select. Enter invite. A accept. W watch. S settings.", LOBBY_PADDING_X, button_y + LOBBY_BUTTON_HEIGHT + 28)
+    _draw_text(screen, small_font, "Up/Down select. I invite. A accept. W watch. S settings. C chat.", LOBBY_PADDING_X, button_y + LOBBY_BUTTON_HEIGHT + 28)
+    _draw_text(screen, small_font, "Enter send. Esc end chat.", LOBBY_PADDING_X, button_y + LOBBY_BUTTON_HEIGHT + 54)
+    _draw_lobby_chat_panel(screen, pygame, font, small_font, state)
 
 
 def _draw_settings(
@@ -635,7 +711,7 @@ def _draw_settings(
     _draw_text(screen, small_font, "Use your configured movement keys in the preview.", SETTINGS_PREVIEW_X, SETTINGS_PREVIEW_Y + SETTINGS_PREVIEW_ROWS * SETTINGS_PREVIEW_CELL_SIZE + 16)
 
 
-def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_name_font: Any, state: ClientAppState) -> None:
+def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_name_font: Any, pie_image: Any, state: ClientAppState) -> None:
     match = state.match_state or {}
     board = match.get("board", {"width": 30, "height": 20})
     snakes = match.get("snakes", {})
@@ -651,7 +727,7 @@ def _draw_match(screen: Any, pygame: Any, font: Any, small_font: Any, player_nam
     for obstacle in obstacles:
         _draw_cell(pygame, screen, obstacle[0], obstacle[1], (110, 110, 110))
     for pie in pies:
-        _draw_cell(pygame, screen, pie["x"], pie["y"], NEON_GREEN)
+        _draw_pie(screen, pygame, pie_image, int(pie["x"]), int(pie["y"]))
 
     for username, snake in snakes.items():
         fallback = "blue" if username != state.username else state.snake_color_name
@@ -701,6 +777,22 @@ def game_over_result_text(state: ClientAppState) -> str:
     return "You lost."
 
 
+def game_over_result_color(state: ClientAppState) -> tuple[int, int, int]:
+    """Return the result headline color for players or spectators."""
+    game_over = state.game_over or {}
+    winner = game_over.get("winner")
+    if state.spectator and winner is not None:
+        match_state = game_over.get("state", {})
+        snakes = match_state.get("snakes", {}) if isinstance(match_state, dict) else {}
+        winner_snake = snakes.get(winner, {}) if isinstance(snakes, dict) else {}
+        return snake_color_rgb(str(winner_snake.get("color") or "pink"))
+    if winner is None:
+        return TEXT_COLOR
+    if winner == state.username:
+        return NEON_GREEN
+    return NEON_RED
+
+
 def game_over_reason_text(reason: str | None) -> str:
     """Return a more human-friendly match-ending reason."""
     reason_map = {
@@ -716,7 +808,7 @@ def _draw_game_over(screen: Any, title_font: Any, font: Any, small_font: Any, st
     winner = game_over.get("winner")
     reason = game_over.get("state", {}).get("reason") or game_over.get("reason")
     _draw_text(screen, title_font, "GAME OVER", 20, 96, color=NEON_PINK)
-    _draw_text(screen, font, game_over_result_text(state), 20, 180, color=NEON_PINK)
+    _draw_text(screen, font, game_over_result_text(state), 20, 180, color=game_over_result_color(state))
     if state.spectator and winner is not None:
         _draw_text(screen, small_font, f"Winner: {winner}", 20, 228, color=TEXT_COLOR)
         reason_y = 268
@@ -768,6 +860,21 @@ def _draw_cheer_ripples(screen: Any, pygame: Any, match: dict[str, Any]) -> None
             if (cell_x, cell_y) in obstacle_cells:
                 continue
             _draw_cell(pygame, screen, int(cell_x), int(cell_y), color)
+
+
+def _load_pie_image(pygame: Any) -> Any:
+    try:
+        image = pygame.image.load(str(PIE_IMAGE_PATH)).convert_alpha()
+        return pygame.transform.smoothscale(image, (CELL_SIZE, CELL_SIZE))
+    except Exception:
+        return None
+
+
+def _draw_pie(screen: Any, pygame: Any, pie_image: Any, x: int, y: int) -> None:
+    if pie_image is None:
+        _draw_cell(pygame, screen, x, y, NEON_GREEN)
+        return
+    screen.blit(pie_image, (BOARD_OFFSET_X + x * CELL_SIZE, BOARD_OFFSET_Y + y * CELL_SIZE))
 
 
 def _draw_player_status(
@@ -875,20 +982,130 @@ def _invite_enabled(state: ClientAppState) -> bool:
 
 
 def _lobby_button_rect(label: str) -> tuple[int, int, int, int]:
-    labels = ["INVITE", "ACCEPT", "WATCH", "SETTINGS"]
+    labels = ["INVITE", "ACCEPT", "WATCH", "SETTINGS", "CHAT"]
     index = labels.index(label)
     x = LOBBY_PADDING_X + index * (LOBBY_BUTTON_WIDTH + LOBBY_BUTTON_GAP)
     return (x, LOBBY_BUTTON_Y, LOBBY_BUTTON_WIDTH, LOBBY_BUTTON_HEIGHT)
 
 
-def _handle_mouse_click(client: ArenaClient, state: ClientAppState, pygame: Any, position: tuple[int, int]) -> None:
+def _draw_lobby_chat_panel(screen: Any, pygame: Any, font: Any, small_font: Any, state: ClientAppState) -> None:
+    panel_x = WINDOW_WIDTH - RIGHT_PANEL_WIDTH - 280
+    panel_y = 52
+    panel_width = 420
+    panel_height = 308
+    rect = pygame.Rect(panel_x, panel_y, panel_width, panel_height)
+    pygame.draw.rect(screen, (8, 8, 8), rect)
+    pygame.draw.rect(screen, BOARD_BORDER, rect, 2)
+    title = state.active_chat_peer or "CHAT"
+    _draw_text(screen, font, title, panel_x + 20, panel_y + 18)
+    if state.active_chat_peer is not None:
+        close_rect = pygame.Rect(panel_x + panel_width - 52, panel_y + 10, 32, 32)
+        pygame.draw.rect(screen, (40, 8, 28), close_rect)
+        pygame.draw.rect(screen, NEON_PINK, close_rect, 2)
+        _draw_text(screen, font, "X", close_rect.x + 8, close_rect.y + 2, color=NEON_PINK)
+
+    message_y = panel_y + 68
+    for message in state.chat_messages[-8:]:
+        _draw_fit_text(screen, small_font, f"{message['from']}: {message['text']}", panel_x + 18, message_y, panel_width - 36)
+        message_y += 32
+
+    if state.active_chat_peer is not None:
+        input_rect = pygame.Rect(panel_x + 12, panel_y + panel_height - 54, panel_width - 24, 36)
+        pygame.draw.rect(screen, (20, 20, 20), input_rect)
+        pygame.draw.rect(screen, BOARD_BORDER, input_rect, 1)
+        prompt = state.chat_input_text if state.chat_input_text else "Type here..."
+        _draw_fit_text(screen, small_font, prompt, input_rect.x + 10, input_rect.y + 8, input_rect.width - 20)
+        return
+
+    if state.incoming_chat_request is not None:
+        requester = str(state.incoming_chat_request.get("requester_username", "") or "")
+        message = str(state.incoming_chat_request.get("message", "") or "")
+        _draw_fit_text(screen, small_font, message, panel_x + 18, panel_y + 80, panel_width - 36)
+        _draw_fit_text(screen, small_font, f"Select {requester} and press C to accept.", panel_x + 18, panel_y + 140, panel_width - 36)
+        return
+
+    if state.outgoing_chat_request is not None:
+        target = str(state.outgoing_chat_request.get("target_username", "") or "")
+        _draw_fit_text(screen, small_font, f"Waiting for {target} to accept chat request.", panel_x + 18, panel_y + 100, panel_width - 36)
+        return
+
+    selected = selected_lobby_username(state)
+    if selected is None:
+        _draw_fit_text(screen, small_font, "No player selected.", panel_x + 18, panel_y + 100, panel_width - 36)
+    else:
+        _draw_fit_text(screen, small_font, f"Select CHAT to request a direct chat with {selected}.", panel_x + 18, panel_y + 100, panel_width - 36)
+
+
+def _handle_chat_action(client: ArenaClient, state: ClientAppState, peer_chat_service: PeerChatService | None) -> None:
+    selected = selected_lobby_username(state)
+    if selected is None:
+        return
+    if state.active_chat_peer is not None and state.active_chat_peer != selected:
+        state.last_error = "Close current chat first."
+        return
+    incoming = state.incoming_chat_request or {}
+    requester = str(incoming.get("requester_username", "") or "")
+    if requester == selected:
+        if state.active_chat_peer is not None and state.active_chat_peer != requester:
+            state.last_error = "Close current chat first."
+            return
+        client.send(message_types.CHAT_REQUEST_ACCEPT, {"requester_username": requester})
+        return
+    if peer_chat_service is None:
+        state.last_error = "Peer chat service is unavailable."
+        return
+    listen_port = peer_chat_service.start_listener()
+    client.send(
+        message_types.CHAT_REQUEST,
+        {
+            "target_username": selected,
+            "chat_port": listen_port,
+        },
+    )
+
+
+def _append_chat_message(state: ClientAppState, payload: dict[str, Any]) -> None:
+    """Append one received peer-chat message to the active lobby thread."""
+    from_username = str(payload.get("from_username", "") or "").strip()
+    text = str(payload.get("text", "") or "").strip()
+    if not from_username or not text:
+        return
+    state.active_chat_peer = from_username
+    state.chat_messages.append({"from": from_username, "text": text})
+    if len(state.chat_messages) > CHAT_HISTORY_LIMIT:
+        state.chat_messages = state.chat_messages[-CHAT_HISTORY_LIMIT:]
+
+
+def _handle_mouse_click(
+    client: ArenaClient,
+    state: ClientAppState,
+    pygame: Any,
+    position: tuple[int, int],
+    peer_chat_service: PeerChatService | None,
+) -> None:
     if state.phase == "lobby":
         x, y = position
+        if state.active_chat_peer is not None:
+            panel_x = WINDOW_WIDTH - RIGHT_PANEL_WIDTH - 280
+            panel_y = 52
+            panel_width = 420
+            close_rect = pygame.Rect(panel_x + panel_width - 52, panel_y + 10, 32, 32)
+            if close_rect.collidepoint(x, y):
+                state.active_chat_peer = None
+                state.peer_chat_info = None
+                state.chat_input_text = ""
+                state.chat_messages.clear()
+                if peer_chat_service is not None:
+                    peer_chat_service.close_chat()
+                    if state.outgoing_chat_request is None:
+                        peer_chat_service.stop_listener()
+                return
         button_states = {
             "INVITE": _invite_enabled(state),
             "ACCEPT": state.challenger_username is not None,
             "WATCH": True,
             "SETTINGS": True,
+            "CHAT": selected_lobby_username(state) is not None,
         }
         for label, enabled in button_states.items():
             if not enabled:
@@ -907,6 +1124,8 @@ def _handle_mouse_click(client: ArenaClient, state: ClientAppState, pygame: Any,
                     client.send(message_types.WATCH_MATCH, {})
                 elif label == "SETTINGS":
                     state.phase = "settings"
+                elif label == "CHAT":
+                    _handle_chat_action(client, state, peer_chat_service)
                 return
         return
 
@@ -966,3 +1185,35 @@ def _draw_cell(pygame: Any, screen: Any, x: int, y: int, color: tuple[int, int, 
 def _draw_text(screen: Any, font: Any, text: str, x: int, y: int, color: tuple[int, int, int] = TEXT_COLOR) -> None:
     surface = font.render(text, True, color)
     screen.blit(surface, (x, y))
+
+
+def _draw_fit_text(
+    screen: Any,
+    font: Any,
+    text: str,
+    x: int,
+    y: int,
+    max_width: int,
+    color: tuple[int, int, int] = TEXT_COLOR,
+    line_gap: int = 6,
+) -> None:
+    """Draw wrapped text inside a fixed width without overflowing the panel."""
+    words = text.split()
+    if not words:
+        return
+
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        trial = f"{current} {word}"
+        if font.size(trial)[0] <= max_width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+
+    current_y = y
+    for line in lines:
+        _draw_text(screen, font, line, x, current_y, color=color)
+        current_y += font.get_height() + line_gap
