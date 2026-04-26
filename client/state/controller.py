@@ -17,6 +17,9 @@ def return_to_lobby(state: ClientAppState) -> ClientAppState:
     state.disconnected_player = None
     state.last_error = None
     state.last_cheer_sent_ms = None
+    state.match_chat_input_text = ""
+    state.match_chat_input_active = False
+    state.match_chat_scroll_offset = 0
     state.peer_chat_info = None
     state.incoming_chat_request = None
     state.outgoing_chat_request = None
@@ -47,6 +50,7 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
     if message_type == message_types.ONLINE_USERS:
         state.online_users = list(payload.get("users", []))
         state.waiting_players = list(payload.get("waiting_players", []))
+        state.has_active_match = payload.get("active_match") is not None
         pending_challenger = payload.get("pending_challenger")
         outgoing_target = payload.get("outgoing_challenge_target")
         state.challenger_username = str(pending_challenger) if pending_challenger else None
@@ -78,6 +82,9 @@ def apply_server_message(state: ClientAppState, message: dict[str, Any]) -> Clie
         state.countdown_seconds = int(payload.get("countdown_seconds", 0) or 0)
         state.countdown_end_ms = None
         state.last_cheer_sent_ms = None
+        state.match_chat_input_text = ""
+        state.match_chat_input_active = False
+        state.match_chat_scroll_offset = 0
         state.peer_chat_info = None
         state.incoming_chat_request = None
         state.outgoing_chat_request = None

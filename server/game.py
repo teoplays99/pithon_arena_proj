@@ -39,6 +39,7 @@ PIE_HEALTH = {
 CHEER_RIPPLE_SPEED = 2
 CHEER_HISTORY_LIMIT = 30
 CHEER_RING_THICKNESS = 0.75
+MATCH_CHAT_HISTORY_LIMIT = 50
 
 
 @dataclass
@@ -64,6 +65,7 @@ class Match:
     obstacles: list[tuple[int, int]] = field(default_factory=list)
     pies: list[dict[str, int | str]] = field(default_factory=list)
     cheers: list[dict[str, str]] = field(default_factory=list)
+    chat_feed: list[dict[str, object]] = field(default_factory=list)
     snake_colors: dict[str, str] = field(default_factory=dict)
     cheer_waves: list[dict[str, object]] = field(default_factory=list)
     winner: str | None = None
@@ -76,6 +78,7 @@ class Match:
         self.snakes = self._build_initial_snakes(self.players)
         self.pending_inputs: dict[str, str] = {}
         self.tick_count = 0
+        self._feed_sequence = 0
         if not self.obstacles:
             self.obstacles = self._default_obstacles()
         if not self.pies:
@@ -228,6 +231,17 @@ class Match:
         self.cheers.append({"from": username, "text": text})
         if len(self.cheers) > CHEER_HISTORY_LIMIT:
             self.cheers = self.cheers[-CHEER_HISTORY_LIMIT:]
+        self._feed_sequence += 1
+        self.chat_feed.append(
+            {
+                "kind": "cheer",
+                "from": username,
+                "target": target_username,
+                "sequence": self._feed_sequence,
+            }
+        )
+        if len(self.chat_feed) > MATCH_CHAT_HISTORY_LIMIT:
+            self.chat_feed = self.chat_feed[-MATCH_CHAT_HISTORY_LIMIT:]
         if target_username and target_username in self.snakes:
             head_x, head_y = self.snakes[target_username].body[0]
             self.cheer_waves.append(
@@ -237,6 +251,20 @@ class Match:
                     "started_tick": self.tick_count,
                 }
             )
+
+    def add_public_chat(self, username: str, text: str) -> None:
+        """Append one public match chat message."""
+        self._feed_sequence += 1
+        self.chat_feed.append(
+            {
+                "kind": "message",
+                "from": username,
+                "text": text,
+                "sequence": self._feed_sequence,
+            }
+        )
+        if len(self.chat_feed) > MATCH_CHAT_HISTORY_LIMIT:
+            self.chat_feed = self.chat_feed[-MATCH_CHAT_HISTORY_LIMIT:]
 
     def _advance_collision_freeze(self) -> None:
         for snake in self.snakes.values():
@@ -353,5 +381,6 @@ class Match:
             "winner": self.winner,
             "reason": self.reason,
             "cheers": list(self.cheers),
+            "chat_feed": list(self.chat_feed),
             "cheer_ripples": self._active_cheer_ripples(),
         }

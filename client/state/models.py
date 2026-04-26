@@ -15,6 +15,7 @@ class ClientAppState:
     username: str | None = None
     online_users: list[str] = field(default_factory=list)
     waiting_players: list[str] = field(default_factory=list)
+    has_active_match: bool = False
     phase: str = "login"
     match_state: dict[str, Any] | None = None
     game_over: dict[str, Any] | None = None
@@ -37,6 +38,9 @@ class ClientAppState:
     countdown_end_ms: int | None = None
     countdown_seconds: int = 0
     last_cheer_sent_ms: int | None = None
+    match_chat_input_text: str = ""
+    match_chat_input_active: bool = False
+    match_chat_scroll_offset: int = 0
     movement_keys: dict[str, int] = field(
         default_factory=lambda: {
             "UP": 1073741906,

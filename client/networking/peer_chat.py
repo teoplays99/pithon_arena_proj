@@ -12,6 +12,8 @@ from common.protocol import make_message, receive_message, send_message
 
 PEER_CHAT_MESSAGE = "PEER_CHAT_MESSAGE"
 PEER_CHAT_CONNECTED = "PEER_CHAT_CONNECTED"
+PEER_CHAT_CLOSED = "PEER_CHAT_CLOSED"
+PEER_CHAT_DISCONNECTED = "PEER_CHAT_DISCONNECTED"
 
 
 class PeerChatService:
@@ -55,11 +57,22 @@ class PeerChatService:
             self._listener = None
         self._listen_port = None
 
-    def close_chat(self) -> None:
+    def close_chat(self, from_username: str | None = None, notify_peer: bool = False) -> None:
         with self._peer_lock:
             peer_socket = self._peer_socket
             self._peer_socket = None
         if peer_socket is not None:
+            try:
+                if notify_peer and from_username:
+                    send_message(
+                        peer_socket,
+                        make_message(
+                            PEER_CHAT_CLOSED,
+                            {"from_username": from_username},
+                        ),
+                    )
+            except OSError:
+                pass
             try:
                 peer_socket.close()
             except OSError:
@@ -133,13 +146,20 @@ class PeerChatService:
                 message = receive_message(peer_socket)
                 if message.get("type") == PEER_CHAT_MESSAGE:
                     self._inbound.put(message)
+                elif message.get("type") == PEER_CHAT_CLOSED:
+                    self._inbound.put(message)
+                    return
         except Exception:
             pass
         finally:
+            was_active = False
             with self._peer_lock:
                 if self._peer_socket is peer_socket:
                     self._peer_socket = None
+                    was_active = True
             try:
                 peer_socket.close()
             except OSError:
                 pass
+            if self._running.is_set() and was_active:
+                self._inbound.put(make_message(PEER_CHAT_DISCONNECTED, {}))

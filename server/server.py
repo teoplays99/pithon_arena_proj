@@ -180,6 +180,8 @@ class PythonArenaServer:
                     self.handle_watch_match(session)
                 elif message["type"] == message_types.CHEER:
                     self.handle_cheer(session, message["payload"])
+                elif message["type"] == message_types.PUBLIC_CHAT:
+                    self.handle_public_chat(session, message["payload"])
                 elif message["type"] == message_types.CHAT_REQUEST:
                     self.handle_chat_request(session, message["payload"])
                 elif message["type"] == message_types.CHAT_REQUEST_ACCEPT:
@@ -471,6 +473,31 @@ class PythonArenaServer:
             state = match.to_state_payload()
 
         for username in self.get_match_recipients(match):
+            self._safe_send(
+                self.user_registry.get_session(username),
+                make_message(message_types.STATE_UPDATE, state),
+            )
+
+    def handle_public_chat(self, session: UserSession, payload: dict[str, object]) -> None:
+        """Append one public match chat message and broadcast it."""
+        if session.username is None:
+            return
+        text = str(payload.get("text", "")).strip()
+        if not text:
+            self._safe_send(session, make_message(message_types.ERROR, {"message": "Chat text is required."}))
+            return
+        with self._match_lock:
+            match = self.active_match
+            if match is None:
+                self._safe_send(session, make_message(message_types.ERROR, {"message": "No active match chat."}))
+                return
+            recipients = self.get_match_recipients(match)
+            if session.username not in recipients:
+                self._safe_send(session, make_message(message_types.ERROR, {"message": "You are not watching the active match."}))
+                return
+            match.add_public_chat(session.username, text)
+            state = match.to_state_payload()
+        for username in recipients:
             self._safe_send(
                 self.user_registry.get_session(username),
                 make_message(message_types.STATE_UPDATE, state),
