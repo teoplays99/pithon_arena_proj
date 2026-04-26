@@ -12,7 +12,7 @@ from client.networking.peer_chat import PEER_CHAT_CONNECTED, PEER_CHAT_MESSAGE, 
 from client.state.controller import apply_server_message, return_to_lobby
 from client.state.models import ClientAppState
 from common import message_types
-from common.constants import DEFAULT_HOST, DEFAULT_PORT, SERVER_TICK_RATE, SNAKE_COLOR_PRESETS
+from common.constants import DEFAULT_CHAT_PORT, DEFAULT_HOST, DEFAULT_PORT, SERVER_TICK_RATE, SNAKE_COLOR_PRESETS
 
 
 WINDOW_WIDTH = 960
@@ -125,7 +125,7 @@ def default_login_form(
         "host": host or DEFAULT_HOST,
         "port": str(port if port is not None else DEFAULT_PORT),
         "username": username or "",
-        "chat_port": "" if chat_port is None else str(chat_port),
+        "chat_port": str(chat_port if chat_port is not None else DEFAULT_CHAT_PORT),
     }
 
 
@@ -269,7 +269,8 @@ def run_pygame_client(
 
         if state.phase == "lobby":
             form["username"] = typed_username
-            form["chat_port"] = "" if typed_chat_port is None else str(typed_chat_port)
+            state.chat_port = typed_chat_port if typed_chat_port is not None else DEFAULT_CHAT_PORT
+            form["chat_port"] = str(state.chat_port)
             client.send(message_types.SETTINGS_UPDATE, {"snake_color": state.snake_color_name})
             if receiver_thread is None or not receiver_thread.is_alive():
                 receiver_thread = threading.Thread(target=receiver, daemon=True)
@@ -1054,7 +1055,11 @@ def _handle_chat_action(client: ArenaClient, state: ClientAppState, peer_chat_se
     if peer_chat_service is None:
         state.last_error = "Peer chat service is unavailable."
         return
-    listen_port = peer_chat_service.start_listener()
+    try:
+        listen_port = peer_chat_service.start_listener(state.chat_port)
+    except OSError:
+        state.last_error = f"Could not open chat port {state.chat_port}."
+        return
     client.send(
         message_types.CHAT_REQUEST,
         {

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from common.constants import DEFAULT_CHAT_PORT
+
 
 @dataclass
 class ClientAppState:
@@ -25,6 +27,7 @@ class ClientAppState:
     active_chat_peer: str | None = None
     chat_messages: list[dict[str, str]] = field(default_factory=list)
     chat_input_text: str = ""
+    chat_port: int = DEFAULT_CHAT_PORT
     last_error: str | None = None
     disconnected_player: str | None = None
     selected_lobby_index: int = 0

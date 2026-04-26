@@ -6,7 +6,7 @@ import argparse
 
 from client.networking.client import ArenaClient
 from client.ui.pygame_client import run_pygame_client
-from common.constants import DEFAULT_HOST, DEFAULT_PORT
+from common.constants import DEFAULT_CHAT_PORT, DEFAULT_HOST, DEFAULT_PORT
 from common.protocol import ProtocolError
 
 
@@ -24,7 +24,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--chat-port",
         type=int,
-        default=None,
+        default=DEFAULT_CHAT_PORT,
         help="Local peer-chat listener port to advertise to the server.",
     )
     return parser
